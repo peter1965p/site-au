@@ -27,6 +27,8 @@ from urllib.robotparser import RobotFileParser
 
 import httpx
 from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+import kontaktsuche
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -46,6 +48,7 @@ from selectolax.lexbor import LexborHTMLParser
 # ---------------------------------------------------------------------------
 
 WEIGHTS: dict[str, float] = {
+    "substanz": 20.0,  # Platzhalterseite oder Seite praktisch ohne Inhalt
     "erreichbarkeit": 12.0,  # Timeout, HTTP-Fehler, lange Redirect-Ketten
     "https": 14.0,  # kein TLS, kaputtes Zertifikat, Mixed Content
     "mobil": 18.0,  # Viewport-Meta fehlt / Zoom gesperrt
@@ -104,6 +107,8 @@ class Lead:
     url: str
     ort: str = ""
     branche: str = ""
+    telefon: str = ""  # falls die Quelle schon welche mitbringt
+    email: str = ""
 
 
 @dataclass
@@ -150,6 +155,7 @@ class AssetInfo:
 class LegalInfo:
     impressum_url: str | None = None
     impressum_status: int | None = None
+    impressum_html: str = ""
     datenschutz_url: str | None = None
     datenschutz_status: int | None = None
 
@@ -181,6 +187,12 @@ class Result:
     severities: dict[str, float | None]
     geprueft_am: str
     pagespeed: int | None = None
+    telefon: str = ""  # von der Seite oder aus der Quelle
+    email: str = ""
+    kontakt_quelle: str = ""  # Startseite | Impressum | OpenStreetMap
+    kontaktformular: bool = False
+    empfehlung: str = ""  # Anruf | Mail | Kontaktformular | ...
+    empfehlung_grund: str = ""
 
 
 # ---------------------------------------------------------------------------
@@ -357,6 +369,91 @@ def find_phones(text: str) -> set[str]:
     return out
 
 
+EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]{2,}")
+# Adressen, die nie beim richtigen Ansprechpartner landen
+EMAIL_MUELL = ("noreply", "no-reply", "postmaster", "abuse@", "webmaster@", "@sentry", "@example.")
+
+
+def kontaktdaten(tree: LexborHTMLParser) -> tuple[str, str]:
+    """Telefonnummer und E-Mail von der Seite lesen.
+
+    Erst die verlinkten tel:/mailto:-Angaben, die sind eindeutig. Erst wenn
+    es keine gibt, wird im sichtbaren Text gesucht.
+    """
+    telefon = email = ""
+    for a in tree.css("a[href]"):
+        href = (a.attributes.get("href") or "").strip()
+        tief = href.lower()
+        if not telefon and tief.startswith("tel:"):
+            telefon = href[4:].strip()
+        elif not email and tief.startswith("mailto:"):
+            kandidat = href[7:].split("?")[0].strip()
+            if kandidat and not any(m in kandidat.lower() for m in EMAIL_MUELL):
+                email = kandidat
+        if telefon and email:
+            break
+
+    if not telefon or not email:
+        text = visible_text(tree)
+        if not telefon:
+            treffer = PHONE_RE.search(text)
+            if treffer:
+                telefon = " ".join(treffer.group(0).split())
+        if not email:
+            for m in EMAIL_RE.finditer(text):
+                if not any(muell in m.group(0).lower() for muell in EMAIL_MUELL):
+                    email = m.group(0)
+                    break
+    return telefon.strip(), email.strip()
+
+
+# ---------------------------------------------------------------------------
+# Naechster Schritt
+# ---------------------------------------------------------------------------
+
+# Ab hier lohnt die Ansprache ueberhaupt. Darunter ist die Seite in Ordnung
+# und ein Relaunch waere schwer zu begruenden.
+SCHWELLE_LOHNT = 30.0
+SCHWELLE_DRINGEND = 60.0
+
+
+def naechster_schritt(res: Result) -> tuple[str, str]:
+    """Empfehlen, ob und wie der Lead angesprochen werden sollte.
+
+    Zwei Fragen zugleich: Lohnt es sich (Score), und welcher Weg steht offen
+    (Kontaktdaten). Ein hoher Score nuetzt nichts, wenn es keinen Draht gibt.
+    """
+    if res.status == "gesperrt":
+        return "manuell ansehen", "Die Seite verbietet die automatische Pruefung."
+    if res.status == "fehler":
+        if res.telefon:
+            return "Anruf", "Die Website ist nicht erreichbar - das ist der beste Aufhaenger."
+        return "manuell ansehen", "Website nicht erreichbar, keine Telefonnummer ermittelt."
+
+    if res.severities.get("substanz") == 1.0:
+        weg = "Nummer liegt vor" if res.telefon else "Kontaktweg muss noch gesucht werden"
+        return (
+            "Anruf" if res.telefon else "Kontakt suchen",
+            f"Keine Website unter der Domain - der klarste Anlass ueberhaupt, {weg}.",
+        )
+
+    if res.score < SCHWELLE_LOHNT:
+        return "zurueckstellen", f"Score {res.score:.0f} - die Seite ist in Ordnung, wenig Ansatzpunkte."
+
+    dringend = res.score >= SCHWELLE_DRINGEND
+    stufe = "Deutlicher Bedarf" if dringend else "Ansatzpunkte vorhanden"
+    anzahl = len(res.argumente)
+
+    if res.telefon:
+        woher = f" (aus {res.kontakt_quelle})" if res.kontakt_quelle else ""
+        return "Anruf", f"{stufe} (Score {res.score:.0f}), {anzahl} Argumente, Nummer liegt vor{woher}."
+    if res.email:
+        return "Mail", f"{stufe} (Score {res.score:.0f}), keine Telefonnummer, aber eine E-Mail-Adresse."
+    if res.kontaktformular:
+        return "Kontaktformular", f"{stufe} (Score {res.score:.0f}), nur ueber das Formular erreichbar."
+    return "Kontakt suchen", f"{stufe} (Score {res.score:.0f}), auf der Startseite kein Kontaktweg zu finden."
+
+
 def human_bytes(n: int) -> str:
     if n >= 1_000_000:
         return f"{n / 1_000_000:.1f} MB"
@@ -368,6 +465,143 @@ def human_bytes(n: int) -> str:
 # ---------------------------------------------------------------------------
 # Checks - jeder nimmt den Context und liefert ein CheckResult
 # ---------------------------------------------------------------------------
+
+
+# Spuren von Platzhalter- und Parkseiten. Unter so einer Domain liegt keine
+# Website - fuer die Akquise der beste Fall, aber nur, wenn das auch so
+# benannt wird statt als "fehlender Viewport".
+PARKSEITE_TEXT = (
+    "diese domain ist bereits registriert",
+    "diese domain wurde registriert",
+    "domain ist reserviert",
+    "diese webseite wird gerade erstellt",
+    "website coming soon",
+    "coming soon",
+    "under construction",
+    "im aufbau",
+    "in kürze für sie da",
+    "in kuerze fuer sie da",
+    "hier entsteht eine neue",
+    "hier entsteht die neue",
+    "diese seite befindet sich im aufbau",
+    "platzhalterseite",
+    "default web page",
+    "welcome to nginx",
+    "apache2 debian default page",
+    "it works!",
+    "future home of something",
+    "domain parking",
+    "geparkte domain",
+)
+PARKSEITE_HOST = (
+    "sedoparking.com", "parkingcrew.net", "above.com", "dan.com", "afternic.com",
+    "bodis.com", "domainparking", "parklogic.com",
+)
+# Diese Anbieter liefern Parkseiten unter eigenem Namen aus
+PARKSEITE_ANBIETER = ("ionos", "1&1", "strato", "godaddy", "hosteurope", "united-domains")
+
+MIN_INHALT = 250  # Zeichen sichtbarer Text, darunter ist die Seite leer
+
+
+def ist_parkseite(ctx: Context) -> str | None:
+    """Erkennen, ob unter der Domain nur eine Platzhalterseite liegt.
+
+    Rueckgabe ist der Grund im Klartext, sonst None. Bewusst streng: ein
+    falscher Treffer wuerde eine echte Website als "nicht vorhanden" melden.
+    """
+    if ctx.tree is None:
+        return None
+    text = visible_text(ctx.tree)
+    klein = text.lower()
+    kurz = len(text) < 1200  # echte Firmenseiten sind laenger
+
+    for marker in PARKSEITE_TEXT:
+        if marker in klein and kurz:
+            return "Platzhalterseite"
+
+    ziel_host = (urlparse(ctx.fetched.final_url).hostname or "").lower()
+    for host in PARKSEITE_HOST:
+        if host in ziel_host:
+            return "Domain-Parkdienst"
+
+    # Anbietername plus Werbung fuer Baukaesten auf einer sehr kurzen Seite
+    if kurz and any(a in klein for a in PARKSEITE_ANBIETER):
+        if any(w in klein for w in ("domain", "webadresse", "mywebsite", "homepage-baukasten")):
+            return "Platzhalterseite des Providers"
+    return None
+
+
+def check_substanz(ctx: Context) -> CheckResult:
+    if ctx.tree is None:
+        return CheckResult("substanz", None)
+
+    grund = ist_parkseite(ctx)
+    if grund:
+        return CheckResult(
+            "substanz",
+            1.0,
+            [
+                Finding(
+                    f"Unter der Domain liegt keine Website, nur eine {grund}",
+                    "Die Firma hat eine Internetadresse, aber keine Website dahinter - "
+                    "wer dort sucht, findet nichts.",
+                )
+            ],
+        )
+
+    # Weiterleitung auf ein soziales Netzwerk: die Firma hat keine eigene Seite
+    ziel = (urlparse(ctx.fetched.final_url).hostname or "").lower()
+    if any(ziel.endswith(h) or ziel.endswith("." + h) for h in SOCIAL_HOSTS):
+        netz = next(h.split(".")[0].capitalize() for h in SOCIAL_HOSTS if h in ziel)
+        return CheckResult(
+            "substanz",
+            1.0,
+            [
+                Finding(
+                    f"Die Domain leitet auf {netz} weiter, es gibt keine eigene Website",
+                    f"Die Firma hat statt einer Website nur eine {netz}-Seite - sie gehoert "
+                    "damit niemandem ausser dem Netzwerk und taucht bei Google kaum auf.",
+                )
+            ],
+        )
+
+    laenge = len(visible_text(ctx.tree))
+    if laenge >= MIN_INHALT:
+        return CheckResult("substanz", 0.0)
+
+    # Wenig Text im Quelltext heisst nicht wenig Inhalt: moderne Seiten bauen
+    # ihn erst im Browser zusammen. Wer Titel, Beschreibung und Skripte
+    # mitbringt, hat eine Seite - sie ist nur fuer Suchmaschinen schlechter
+    # greifbar. Das als "kein Inhalt" zu melden waere ein Fehlalarm.
+    titel = ctx.tree.css_first("title")
+    hat_titel = bool(titel and titel.text(strip=True))
+    hat_beschreibung = bool(meta_content(ctx.tree, "description"))
+    skripte = len(ctx.tree.css("script[src], script[type=module]"))
+
+    if hat_titel and hat_beschreibung and skripte:
+        return CheckResult(
+            "substanz",
+            0.3,
+            [
+                Finding(
+                    "Inhalte werden erst im Browser per JavaScript aufgebaut",
+                    "Die Seiteninhalte entstehen erst im Browser - Suchmaschinen und "
+                    "Vorschaubilder in sozialen Netzwerken sehen davon wenig.",
+                )
+            ],
+        )
+
+    return CheckResult(
+        "substanz",
+        0.75,
+        [
+            Finding(
+                f"Startseite enthaelt fast keinen Text ({laenge} Zeichen)",
+                "Die Startseite hat praktisch keinen Inhalt - weder fuer Besucher "
+                "noch fuer Google gibt es dort etwas zu finden.",
+            )
+        ],
+    )
 
 
 def check_erreichbarkeit(ctx: Context) -> CheckResult:
@@ -1113,6 +1347,7 @@ def check_pagespeed(ctx: Context) -> CheckResult:
 
 
 CHECKS = [
+    check_substanz,
     check_erreichbarkeit,
     check_https,
     check_mobil,
@@ -1127,6 +1362,7 @@ CHECKS = [
 ]
 
 LABELS = {
+    "substanz": "Inhalt",
     "erreichbarkeit": "Erreichbarkeit",
     "https": "HTTPS",
     "mobil": "Mobil",
@@ -1305,6 +1541,25 @@ class Fetcher:
 
             elapsed = time.monotonic() - started
             body = resp.text
+
+            # Meta-Refresh bis zu zweimal folgen
+            gesehen = {str(resp.url)}
+            weiter = refresh_ziel(body, str(resp.url))
+            for _ in range(2):
+                if not weiter or weiter in gesehen:
+                    break
+                gesehen.add(weiter)
+                try:
+                    await self.limiter.wait(host_of(weiter))
+                    folge = await self.secure.get(weiter)
+                except Exception:  # noqa: BLE001 - dann bleibt die Huelle
+                    break
+                if folge.status_code >= 400:
+                    break
+                resp = folge
+                body = folge.text
+                weiter = refresh_ziel(body, str(folge.url))
+
             return Fetched(
                 url=candidates[0],
                 final_url=str(resp.url),
@@ -1331,6 +1586,15 @@ class Fetcher:
             except Exception:  # noqa: BLE001
                 return None
         return None
+
+    async def text_of(self, url: str) -> str:
+        """HTML einer Unterseite holen. Leerer String, wenn es nicht klappt."""
+        try:
+            await self.limiter.wait(host_of(url))
+            resp = await self.secure.get(url)
+            return resp.text if resp.status_code < 400 else ""
+        except Exception:  # noqa: BLE001 - eine Unterseite darf nie den Lauf kippen
+            return ""
 
     async def measure_asset(self, url: str) -> tuple[int, bytes] | None:
         """Groesse und die ersten Bytes eines Assets holen (ein Request)."""
@@ -1363,6 +1627,32 @@ class Fetcher:
                 return total, head
         except Exception:  # noqa: BLE001
             return None
+
+
+META_REFRESH = re.compile(
+    r"""<meta[^>]+http-equiv\s*=\s*["']?refresh["']?[^>]*content\s*=\s*["']\s*(\d+)\s*;\s*"""
+    r"""url\s*=\s*["']?([^"'>\s]+)""",
+    re.IGNORECASE,
+)
+
+SOCIAL_HOSTS = (
+    "facebook.com", "instagram.com", "linkedin.com", "x.com", "twitter.com",
+    "tiktok.com", "youtube.com", "pinterest.de", "pinterest.com",
+)
+
+
+def refresh_ziel(html: str, basis: str) -> str | None:
+    """Ziel einer <meta http-equiv="refresh">-Weiterleitung.
+
+    httpx folgt nur HTTP-Weiterleitungen. Ohne das hier pruefen wir bei
+    aelteren Seiten eine leere Huelle statt der echten Seite.
+    """
+    m = META_REFRESH.search(html[:4000])
+    if not m:
+        return None
+    if int(m.group(1)) > 5:  # echte Verzoegerung, kein Umleitungstrick
+        return None
+    return urljoin(basis, m.group(2).strip())
 
 
 def describe_error(exc: BaseException) -> str:
@@ -1452,12 +1742,14 @@ async def audit_lead(lead: Lead, fetcher: Fetcher, args: argparse.Namespace, psi
     except Exception:  # noqa: BLE001
         allowed = True
     if not allowed:
-        return Result(
+        gesperrt = Result(
             lead.name, lead.url, lead.ort, lead.branche, candidates[0], "gesperrt", 0.0, "",
             ["Automatische Pruefung per robots.txt untersagt - Seite manuell ansehen."],
             ["Durch robots.txt fuer automatisierte Pruefung gesperrt, nicht bewertet"],
-            {}, now,
+            {}, now, telefon=lead.telefon, email=lead.email,
         )
+        gesperrt.empfehlung, gesperrt.empfehlung_grund = naechster_schritt(gesperrt)
+        return gesperrt
 
     fetched = await fetcher.get_page(candidates)
     tree = None
@@ -1477,6 +1769,7 @@ async def audit_lead(lead: Lead, fetcher: Fetcher, args: argparse.Namespace, psi
         legal = LegalInfo(impressum_url=imp, datenschutz_url=dat)
         if imp:
             legal.impressum_status = await fetcher.head_status(imp)
+            legal.impressum_html = await fetcher.text_of(imp)
         if dat and dat != imp:
             legal.datenschutz_status = await fetcher.head_status(dat)
         elif dat:
@@ -1510,6 +1803,16 @@ async def audit_lead(lead: Lead, fetcher: Fetcher, args: argparse.Namespace, psi
             ctx.psi_ran = ctx.psi_score is not None
 
     results = [c(ctx) for c in CHECKS]
+
+    # Liegt unter der Domain nur eine Platzhalterseite, sind alle weiteren
+    # Befunde irrefuehrend: "kein Viewport" und "kein Impressum" beschreiben
+    # dann die Seite des Providers, nicht die der Firma.
+    substanz = next((r for r in results if r.key == "substanz"), None)
+    if substanz is not None and substanz.severity == 1.0:
+        results = [substanz] + [
+            CheckResult(r.key, None) for r in results if r.key != "substanz"
+        ]
+
     score = score_from_checks(results)
     arguments = build_arguments(results)
     _hits, cms = detect_stack(ctx)
@@ -1525,7 +1828,47 @@ async def audit_lead(lead: Lead, fetcher: Fetcher, args: argparse.Namespace, psi
     if not arguments and status == "ok":
         arguments = ["Keine groben Maengel gefunden - hier lohnt eher ein Gespraech ueber Inhalte als ueber Technik."]
 
-    return Result(
+    telefon = email = ""
+    quelle_kontakt = ""
+    formular = False
+    if tree is not None:
+        telefon, email = kontaktdaten(tree)
+        if telefon or email:
+            quelle_kontakt = "Startseite"
+        formular = any(f.css("input, textarea") for f in tree.css("form"))
+
+        # Steht nichts auf der Startseite, im Impressum nachsehen. Dort muss
+        # in Deutschland ohnehin ein Kontaktweg stehen.
+        if not (telefon and email) and ctx.legal and ctx.legal.impressum_html:
+            try:
+                imp_tree = LexborHTMLParser(ctx.legal.impressum_html)
+            except Exception:  # noqa: BLE001
+                imp_tree = None
+            if imp_tree is not None:
+                imp_tel, imp_mail = kontaktdaten(imp_tree)
+                if imp_tel and not telefon:
+                    telefon, quelle_kontakt = imp_tel, "Impressum"
+                if imp_mail and not email:
+                    email = imp_mail
+                    quelle_kontakt = quelle_kontakt or "Impressum"
+
+    # Aus der Quelle mitgebrachte Daten (OpenStreetMap) als naechster Rueckfall
+    if not telefon and lead.telefon:
+        telefon, quelle_kontakt = lead.telefon, quelle_kontakt or "OpenStreetMap"
+    if not email and lead.email:
+        email = lead.email
+        quelle_kontakt = quelle_kontakt or "OpenStreetMap"
+
+    # Immer noch keine Nummer: einmal im Branchenverzeichnis nachschlagen.
+    # Genau hier sitzen die interessantesten Faelle - geparkte Domains und
+    # Seiten ohne Impressum, bei denen sonst "Kontakt suchen" stehen bliebe.
+    if not telefon and args.verzeichnis:
+        treffer = await kontaktsuche.oertliche_suchen(lead.name, lead.ort, fetcher)
+        if treffer:
+            telefon = treffer.telefon
+            quelle_kontakt = f"{treffer.quelle} ({treffer.name[:40]})"
+
+    res = Result(
         name=lead.name,
         url=lead.url,
         ort=lead.ort,
@@ -1539,7 +1882,13 @@ async def audit_lead(lead: Lead, fetcher: Fetcher, args: argparse.Namespace, psi
         severities=severities,
         geprueft_am=now,
         pagespeed=ctx.psi_score,
+        telefon=telefon,
+        email=email,
+        kontakt_quelle=quelle_kontakt,
+        kontaktformular=formular,
     )
+    res.empfehlung, res.empfehlung_grund = naechster_schritt(res)
+    return res
 
 
 async def fetch_pagespeed(fetcher: Fetcher, url: str, key: str) -> int | None:
@@ -1767,9 +2116,9 @@ def read_leads(path: Path) -> list[Lead]:
 
 
 CSV_COLUMNS = [
-    "score", "name", "ort", "branche", "url", "final_url", "status", "cms",
-    "pagespeed", "akquise", "wiedervorlage", "notiz", "argumente", "befunde",
-    "geprueft_am",
+    "score", "empfehlung", "name", "telefon", "email", "ort", "branche", "url",
+    "final_url", "status", "cms", "pagespeed", "akquise", "wiedervorlage",
+    "notiz", "begruendung", "argumente", "befunde", "geprueft_am",
 ]
 
 
@@ -1783,9 +2132,10 @@ def write_csv(results: list[Result], path: Path, status: dict[str, LeadStatus] |
             st = status.get(Statusbuch.key(r.url), LeadStatus(url_key=""))
             writer.writerow(
                 [
-                    f"{r.score:.1f}", r.name, r.ort, r.branche, r.url, r.final_url,
+                    f"{r.score:.1f}", r.empfehlung, r.name, r.telefon, r.email,
+                    r.ort, r.branche, r.url, r.final_url,
                     r.status, r.cms, "" if r.pagespeed is None else r.pagespeed,
-                    st.status, st.wiedervorlage, st.notiz,
+                    st.status, st.wiedervorlage, st.notiz, r.empfehlung_grund,
                     " ".join(r.argumente), " | ".join(r.befunde), r.geprueft_am,
                 ]
                 + ["" if r.severities.get(k) is None else f"{r.severities[k]:.2f}" for k in WEIGHTS]
@@ -1963,6 +2313,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--host-interval", type=float, default=HOST_INTERVAL, help="Sekunden zwischen Requests pro Host")
     p.add_argument("--assets", type=int, default=DEFAULT_ASSETS, help="Wie viele Bilder/CSS/JS pro Seite vermessen (0 = aus)")
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="Timeout pro Request in Sekunden")
+    p.add_argument(
+        "--kein-verzeichnis",
+        dest="verzeichnis",
+        action="store_false",
+        help="nicht im Branchenverzeichnis nach fehlenden Telefonnummern nachschlagen",
+    )
     return p
 
 

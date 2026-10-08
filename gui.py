@@ -54,6 +54,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QProgressBar,
@@ -68,6 +69,7 @@ from PySide6.QtWidgets import (
 )
 
 import audit
+import kontaktsuche
 from audit import Cache, Lead, LeadStatus, Result, Statusbuch
 
 # Farben passend zum HTML-Report
@@ -271,8 +273,18 @@ class Zeile:
 
 # Branche steht bewusst nicht in der Tabelle: sie dient als Filter und steht
 # im Detailbereich. Der Firmenname ist die wichtigste Spalte und braucht Platz.
-SPALTEN = ["Score", "Firma", "Ort", "Technik", "Zustand", "Akquise", "Wiedervorlage"]
-S_SCORE, S_FIRMA, S_ORT, S_TECHNIK, S_ZUSTAND, S_AKQUISE, S_WV = range(7)
+SPALTEN = ["Score", "Firma", "Ort", "Technik", "Schritt", "Kontakt", "Akquise", "Wiedervorlage"]
+S_SCORE, S_FIRMA, S_ORT, S_TECHNIK, S_SCHRITT, S_KONTAKT, S_AKQUISE, S_WV = range(8)
+
+# Farbe je Handlungsempfehlung
+SCHRITT_FARBE = {
+    "Anruf": OK,
+    "Mail": ACCENT,
+    "Kontaktformular": ACCENT,
+    "Kontakt suchen": WARN,
+    "manuell ansehen": WARN,
+    "zurueckstellen": MUTED,
+}
 
 ROLLE_SORT = Qt.ItemDataRole.UserRole + 1
 ROLLE_ZEILE = Qt.ItemDataRole.UserRole + 2
@@ -323,7 +335,8 @@ class LeadModel(QAbstractTableModel):
                 S_FIRMA: r.name.lower(),
                 S_ORT: r.ort.lower(),
                 S_TECHNIK: (r.cms or "").lower(),
-                S_ZUSTAND: r.status,
+                S_SCHRITT: r.empfehlung,
+                S_KONTAKT: (r.telefon or r.email or "zzz").lower(),
                 S_AKQUISE: st.status,
                 S_WV: st.wiedervorlage or "9999",
             }[col]
@@ -337,10 +350,14 @@ class LeadModel(QAbstractTableModel):
                 return r.ort or "–"
             if col == S_TECHNIK:
                 return r.cms or "–"
-            if col == S_ZUSTAND:
-                # "geprueft" ist der Normalfall und steht bei jeder Zeile - das
-                # waere nur Rauschen. Nur Abweichungen bekommen Text.
-                return {"fehler": "nicht erreichbar", "gesperrt": "gesperrt"}.get(r.status, "")
+            if col == S_SCHRITT:
+                return r.empfehlung or ""
+            if col == S_KONTAKT:
+                if r.telefon:
+                    return r.telefon
+                if r.email:
+                    return r.email
+                return "–"
             if col == S_AKQUISE:
                 return st.status
             if col == S_WV:
@@ -351,6 +368,8 @@ class LeadModel(QAbstractTableModel):
 
         if role == Qt.ItemDataRole.ToolTipRole:
             teile = [f"{r.name} — Score {r.score:.0f}", r.final_url or r.url]
+            if r.empfehlung:
+                teile += ["", f"{r.empfehlung}: {r.empfehlung_grund}"]
             if r.argumente:
                 teile += ["", *(f"• {a}" for a in r.argumente)]
             if st.notiz:
@@ -358,14 +377,21 @@ class LeadModel(QAbstractTableModel):
             return "\n".join(teile)
 
         if role == Qt.ItemDataRole.ForegroundRole:
-            if col == S_ZUSTAND and r.status == "fehler":
-                return QColor(BAD)
+            if col == S_SCHRITT:
+                return QColor(SCHRITT_FARBE.get(r.empfehlung, MUTED))
+            if col == S_KONTAKT and not (r.telefon or r.email):
+                return QColor(MUTED)
             if col == S_WV and st.wiedervorlage and st.wiedervorlage <= date.today().isoformat():
                 return QColor(WARN)
             if col == S_AKQUISE and st.status != "offen":
                 return QColor(ACCENT)
             if col in (S_ORT, S_TECHNIK):
                 return QColor(MUTED)
+
+        if role == Qt.ItemDataRole.FontRole and col == S_SCHRITT and r.empfehlung == "Anruf":
+            f = QFont()
+            f.setBold(True)
+            return f
 
         if role == Qt.ItemDataRole.FontRole and col == S_FIRMA:
             f = QFont()
@@ -421,6 +447,7 @@ class LeadFilter(QSortFilterProxyModel):
         self.ort = ""
         self.branche = ""
         self.akquise = ""
+        self.schritt = ""
         self.suche = ""
         self.min_score = 0.0
         self.nur_faellig = False
@@ -437,6 +464,8 @@ class LeadFilter(QSortFilterProxyModel):
         if self.branche and r.branche != self.branche:
             return False
         if self.akquise and st.status != self.akquise:
+            return False
+        if self.schritt and r.empfehlung != self.schritt:
             return False
         if r.score < self.min_score:
             return False
@@ -573,6 +602,14 @@ class Fenster(QMainWindow):
         self.f_branche.currentIndexChanged.connect(self.filter_anwenden)
         lay.addWidget(self.f_branche)
 
+        self.f_schritt = QComboBox()
+        self.f_schritt.addItem("jeder Schritt", "")
+        for w in ("Anruf", "Mail", "Kontaktformular", "Kontakt suchen", "manuell ansehen", "zurueckstellen"):
+            self.f_schritt.addItem(w, w)
+        self.f_schritt.setToolTip("Nach der Handlungsempfehlung filtern")
+        self.f_schritt.currentIndexChanged.connect(self.filter_anwenden)
+        lay.addWidget(self.f_schritt)
+
         self.f_akquise = QComboBox()
         self.f_akquise.addItem("jeder Akquise-Status", "")
         for w in audit.STATUS_WERTE:
@@ -621,8 +658,8 @@ class Fenster(QMainWindow):
         kopf = self.tabelle.horizontalHeader()
         kopf.setMinimumSectionSize(64)
         kopf.setSectionResizeMode(S_FIRMA, QHeaderView.ResizeMode.Stretch)
-        for c, breite in ((S_SCORE, 74), (S_ORT, 116), (S_TECHNIK, 138),
-                          (S_ZUSTAND, 112), (S_AKQUISE, 118), (S_WV, 118)):
+        for c, breite in ((S_SCORE, 74), (S_ORT, 112), (S_TECHNIK, 132),
+                          (S_SCHRITT, 126), (S_KONTAKT, 150), (S_AKQUISE, 116), (S_WV, 112)):
             kopf.setSectionResizeMode(c, QHeaderView.ResizeMode.Interactive)
             self.tabelle.setColumnWidth(c, breite)
 
@@ -644,6 +681,16 @@ class Fenster(QMainWindow):
         self.untertitel.setStyleSheet(f"color: {MUTED};")
         self.untertitel.setOpenExternalLinks(True)
         lay.addWidget(self.untertitel)
+
+        self.kontaktleiste = QLabel("")
+        self.kontaktleiste.setObjectName("kontakt")
+        self.kontaktleiste.setTextFormat(Qt.TextFormat.RichText)
+        self.kontaktleiste.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextBrowserInteraction
+        )
+        self.kontaktleiste.setOpenExternalLinks(True)
+        self.kontaktleiste.setWordWrap(True)
+        lay.addWidget(self.kontaktleiste)
 
         self.tabs = QTabWidget()
 
@@ -711,6 +758,15 @@ class Fenster(QMainWindow):
         self.btn_pdf = QPushButton("One-Pager als PDF …")
         self.btn_pdf.clicked.connect(self.pdf_exportieren)
         knoepfe.addWidget(self.btn_pdf)
+        self.btn_kontaktsuche = QPushButton("Kontakt suchen ▾")
+        self.btn_kontaktsuche.setToolTip(
+            "Öffnet eine vorbereitete Suche im Standardbrowser:\n"
+            "Das Örtliche, Gelbe Seiten, 11880 oder Google."
+        )
+        self.btn_kontaktsuche.clicked.connect(self.kontakt_im_netz_suchen)
+        self.btn_kontaktsuche.setVisible(False)
+        knoepfe.addWidget(self.btn_kontaktsuche)
+
         self.btn_web = QPushButton("Im Browser öffnen")
         self.btn_web.setToolTip(
             "Öffnet die Seite im Standardbrowser des Systems.\n"
@@ -829,6 +885,7 @@ class Fenster(QMainWindow):
         self.proxy.ort = self.f_ort.currentData() or ""
         self.proxy.branche = self.f_branche.currentData() or ""
         self.proxy.akquise = self.f_akquise.currentData() or ""
+        self.proxy.schritt = self.f_schritt.currentData() or ""
         self.proxy.min_score = float(self.f_min.currentData() or 0)
         self.proxy.nur_faellig = self.chk_faellig.isChecked()
         self.proxy.suche = self.f_suche.text().strip().lower()
@@ -850,6 +907,8 @@ class Fenster(QMainWindow):
             self.titel.setText("Kein Lead ausgewählt")
             self.untertitel.setText("")
             self.befund_ansicht.setHtml("")
+            self.kontaktleiste.setText("")
+            self.btn_kontaktsuche.setVisible(False)
             return
 
         r, st = z.result, z.status
@@ -866,6 +925,7 @@ class Fenster(QMainWindow):
             teile.append(f"PageSpeed {r.pagespeed}")
         self.untertitel.setText("  ·  ".join(teile))
         self.befund_ansicht.setHtml(self._befund_html(r))
+        self._kontaktleiste_fuellen(r)
 
         self._lade_sperre = True
         self.statusfeld.setEnabled(True)
@@ -914,6 +974,64 @@ class Fenster(QMainWindow):
             self.browser = QWebEngineView()
             self.web_platz.layout().addWidget(self.browser)
         return self.browser
+
+    def _kontaktleiste_fuellen(self, r) -> None:
+        """Empfehlung und Kontaktwege als erste Zeile im Detailbereich."""
+        farbe = SCHRITT_FARBE.get(r.empfehlung, MUTED)
+        teile = [
+            f'<span style="color:{farbe}; font-weight:700;">{r.empfehlung or "–"}</span>'
+            f'<span style="color:{MUTED};"> &nbsp;{self._esc(r.empfehlung_grund)}</span>'
+        ]
+        wege = []
+        if r.telefon:
+            nummer = self._esc(r.telefon)
+            roh = "".join(c for c in r.telefon if c.isdigit() or c == "+")
+            wege.append(f'📞 <a href="tel:{roh}" style="color:{FG};">{nummer}</a>')
+        if r.email:
+            wege.append(
+                f'✉ <a href="mailto:{self._esc(r.email)}" style="color:{FG};">{self._esc(r.email)}</a>'
+            )
+        if r.kontakt_quelle:
+            wege.append(f'<span style="color:{MUTED};">Quelle: {r.kontakt_quelle}</span>')
+        if wege:
+            teile.append("&nbsp;&nbsp;".join(wege))
+        self.kontaktleiste.setText("<br>".join(teile))
+        # Der Knopf lohnt nur, wenn wirklich nichts da ist
+        self.btn_kontaktsuche.setVisible(not (r.telefon or r.email))
+
+    def _such_menue(self) -> QMenu:
+        """Menue mit den Verzeichnissen, in denen von Hand gesucht werden darf."""
+        menue = QMenu(self)
+        z = self.aktuelle_zeile()
+        if z is None:
+            return menue
+        r = z.result
+        for titel, adresse in kontaktsuche.such_links(r.name, r.ort, r.final_url or r.url):
+            aktion = QAction(titel, menue)
+            aktion.triggered.connect(lambda _=False, a=adresse, t=titel: self._suche_oeffnen(a, t))
+            menue.addAction(aktion)
+        return menue
+
+    def _suche_oeffnen(self, adresse: str, titel: str) -> None:
+        QDesktopServices.openUrl(QUrl(adresse))
+        self.statusBar().showMessage(f"Suche bei {titel} im Browser geöffnet.", 6000)
+
+    def kontakt_im_netz_suchen(self) -> None:
+        """Vorbereitete Suche im Standardbrowser oeffnen.
+
+        Diese Verzeichnisse duerfen nicht automatisiert abgefragt werden -
+        Gelbe Seiten sperrt die Suche per robots.txt, Google untersagt es in
+        den Nutzungsbedingungen. Von Hand nachschlagen darf dort aber jeder,
+        deshalb bereitet das Tool nur die Anfrage vor und oeffnet sie im
+        Browser des Nutzers. Das Örtliche wird beim Pruefen bereits
+        automatisch abgefragt, soweit dessen robots.txt das zulaesst.
+        """
+        z = self.aktuelle_zeile()
+        if z is None:
+            return
+        menue = self._such_menue()
+        if not menue.isEmpty():
+            menue.exec(self.btn_kontaktsuche.mapToGlobal(self.btn_kontaktsuche.rect().bottomLeft()))
 
     def tab_gewechselt(self, index: int) -> None:
         if index != 1:
@@ -997,6 +1115,7 @@ class Fenster(QMainWindow):
             host_interval=audit.HOST_INTERVAL,
             assets=audit.DEFAULT_ASSETS,
             timeout=audit.DEFAULT_TIMEOUT,
+            verzeichnis=True,
         )
 
         self.lauf = LaufThread(self.leads, args, self.psi_key)
@@ -1156,6 +1275,10 @@ QPushButton:disabled {{ color: #5a6676; border-color: #222a36; }}
 QPushButton#start {{ background: #1d3b57; border-color: #2d5c86; font-weight: 600; }}
 QPushButton#start:hover {{ background: #24496b; }}
 QWidget#statusfeld {{ background: {PANEL}; border: 1px solid {LINE}; border-radius: 8px; }}
+QLabel#kontakt {{
+    background: {PANEL}; border: 1px solid {LINE}; border-radius: 8px;
+    padding: 9px 12px; font-size: 13px;
+}}
 QTabBar::tab {{
     background: transparent; color: {MUTED}; padding: 7px 16px;
     border-bottom: 2px solid transparent;
