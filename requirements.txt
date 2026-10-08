@@ -1,0 +1,6 @@
+httpx
+selectolax
+rich
+jinja2
+pytest
+pytest-asyncio

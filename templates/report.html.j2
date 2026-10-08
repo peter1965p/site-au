@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>site-audit &ndash; Relaunch-Kandidaten</title>
+<style>
+  :root {
+    --bg: #11151c;
+    --panel: #171d26;
+    --panel-2: #1e2633;
+    --line: #2a3443;
+    --fg: #e4e9f0;
+    --muted: #93a0b4;
+    --accent: #5aa9f7;
+    --bad: #ef4a5c;
+    --warn: #e8a33d;
+    --ok: #3fb97a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  .wrap { max-width: 1400px; margin: 0 auto; padding: 28px 16px 64px; }
+  header h1 { margin: 0 0 4px; font-size: 22px; letter-spacing: -0.01em; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+
+  .bar {
+    display: flex; flex-wrap: wrap; gap: 10px; align-items: center;
+    margin: 22px 0 14px; padding: 14px; background: var(--panel);
+    border: 1px solid var(--line); border-radius: 10px;
+  }
+  .bar label { font-size: 12px; color: var(--muted); display: block; margin-bottom: 4px; }
+  select, input[type=search] {
+    background: var(--panel-2); color: var(--fg); border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 9px; font: inherit; font-size: 14px; min-width: 150px;
+  }
+  input[type=search] { min-width: 210px; }
+  select:focus, input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .count { margin-left: auto; color: var(--muted); font-size: 13px; }
+  button.reset {
+    background: var(--panel-2); color: var(--muted); border: 1px solid var(--line);
+    border-radius: 7px; padding: 7px 12px; font: inherit; cursor: pointer;
+  }
+  button.reset:hover { color: var(--fg); border-color: var(--accent); }
+
+  table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 10px; overflow: hidden; }
+  thead th {
+    position: sticky; top: 0; z-index: 2;
+    background: var(--panel-2); text-align: left; font-size: 12px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted);
+    padding: 11px 12px; border-bottom: 1px solid var(--line); cursor: pointer;
+    white-space: nowrap; user-select: none;
+  }
+  thead th:hover { color: var(--fg); }
+  thead th .arrow { opacity: 0.35; font-size: 10px; }
+  thead th[aria-sort] .arrow { opacity: 1; color: var(--accent); }
+  tbody td { padding: 11px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  tbody tr.main { cursor: pointer; }
+  tbody tr.main:hover td { background: #1b2230; }
+
+  .score { font-variant-numeric: tabular-nums; font-weight: 700; font-size: 16px; }
+  .score.bad { color: var(--bad); }
+  .score.warn { color: var(--warn); }
+  .score.ok { color: var(--ok); }
+  .score.none { color: var(--muted); }
+  .meter { height: 4px; border-radius: 2px; background: var(--line); margin-top: 5px; min-width: 52px; }
+  .meter > i { display: block; height: 100%; border-radius: 2px; }
+
+  .name { font-weight: 600; }
+  .name a { color: var(--fg); text-decoration: none; border-bottom: 1px dotted var(--muted); }
+  .name a:hover { color: var(--accent); border-color: var(--accent); }
+  .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  .args { color: var(--muted); font-size: 13px; }
+  .args li { margin: 0 0 3px; }
+  .args ul { margin: 0; padding-left: 16px; }
+
+  .tag {
+    display: inline-block; padding: 2px 7px; border-radius: 5px; font-size: 11px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
+    white-space: nowrap;
+  }
+  .tag.st-fehler { color: var(--bad); border-color: #5a2630; }
+  .tag.st-gesperrt { color: var(--warn); border-color: #5a4524; }
+  .tag.st-ok { color: var(--ok); border-color: #24503a; }
+
+  tr.detail td { background: #141a23; padding: 0 12px 16px; }
+  tr.detail.hidden { display: none; }
+  .findings { margin: 4px 0 0; padding-left: 18px; font-size: 13px; color: #c3cdda; }
+  .findings li { margin: 0 0 4px; }
+  .detail-head { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin: 12px 0 6px; }
+  .toggle { color: var(--accent); font-size: 12px; margin-top: 6px; }
+
+  footer { margin-top: 26px; color: var(--muted); font-size: 12px; }
+  footer code { background: var(--panel-2); padding: 1px 5px; border-radius: 4px; }
+  .weights { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .empty { padding: 28px 12px; text-align: center; color: var(--muted); }
+  .empty.hidden { display: none; }
+
+  @media (max-width: 760px) {
+    .col-opt { display: none; }
+    .wrap { padding: 18px 12px 48px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>site-audit &ndash; Relaunch-Kandidaten</h1>
+  <p>{{ rows|length }} Seiten aus <code>{{ quelle }}</code> &middot; erstellt am {{ erstellt }} &middot; hoher Score = hoher Relaunch-Bedarf</p>
+</header>
+
+<div class="bar">
+  <div>
+    <label for="f-ort">Ort</label>
+    <select id="f-ort"><option value="">alle Orte</option>
+      {% for o in orte %}<option value="{{ o }}">{{ o }}</option>{% endfor %}
+    </select>
+  </div>
+  <div>
+    <label for="f-branche">Branche</label>
+    <select id="f-branche"><option value="">alle Branchen</option>
+      {% for b in branchen %}<option value="{{ b }}">{{ b }}</option>{% endfor %}
+    </select>
+  </div>
+  <div>
+    <label for="f-status">Status</label>
+    <select id="f-status"><option value="">alle</option>
+      <option value="ok">geprueft</option>
+      <option value="fehler">nicht erreichbar</option>
+      <option value="gesperrt">gesperrt</option>
+    </select>
+  </div>
+  <div>
+    <label for="f-text">Suche</label>
+    <input type="search" id="f-text" placeholder="Name, Technik, Befund &hellip;">
+  </div>
+  <div>
+    <label for="f-min">Score ab</label>
+    <select id="f-min"><option value="0">0</option><option value="35">35</option><option value="50">50</option><option value="60">60</option><option value="75">75</option></select>
+  </div>
+  <button class="reset" id="reset" type="button">Zuruecksetzen</button>
+  <span class="count" id="count"></span>
+</div>
+
+<table id="tbl">
+  <thead>
+    <tr>
+      <th data-sort="score" data-type="num" aria-sort="descending">Score <span class="arrow">&#9660;</span></th>
+      <th data-sort="name" data-type="str">Firma <span class="arrow">&#9671;</span></th>
+      <th data-sort="ort" data-type="str" class="col-opt">Ort <span class="arrow">&#9671;</span></th>
+      <th data-sort="branche" data-type="str" class="col-opt">Branche <span class="arrow">&#9671;</span></th>
+      <th data-sort="cms" data-type="str" class="col-opt">Technik <span class="arrow">&#9671;</span></th>
+      <th data-sort="status" data-type="str">Status <span class="arrow">&#9671;</span></th>
+      <th>Argumente fuer das Erstgespraech</th>
+    </tr>
+  </thead>
+  <tbody id="body"></tbody>
+</table>
+<div class="empty hidden" id="empty">Keine Treffer fuer diese Filter.</div>
+
+<footer>
+  <p>Befunde sind automatisch erzeugt. Rechtliche Punkte sind Hinweise zur Pruefung, keine Rechtsauskunft.</p>
+  <p>Gewichte dieses Laufs:</p>
+  <div class="weights">
+    {% for key, w in gewichte.items() %}<span class="tag">{{ labels.get(key, key) }} {{ w }}</span>{% endfor %}
+  </div>
+</footer>
+
+</div>
+
+<script id="data" type="application/json">{{ rows|tojson }}</script>
+<script>
+(function () {
+  "use strict";
+  var rows = JSON.parse(document.getElementById("data").textContent);
+  var body = document.getElementById("body");
+  var empty = document.getElementById("empty");
+  var count = document.getElementById("count");
+  var sort = { key: "score", dir: -1, type: "num" };
+
+  function cls(score, status) {
+    if (status === "gesperrt") return "none";
+    if (score >= 60) return "bad";
+    if (score >= 35) return "warn";
+    return "ok";
+  }
+
+  function colorOf(k) {
+    return k === "bad" ? "var(--bad)" : k === "warn" ? "var(--warn)" : k === "ok" ? "var(--ok)" : "var(--muted)";
+  }
+
+  function el(tag, attrs, text) {
+    var n = document.createElement(tag);
+    if (attrs) { for (var k in attrs) { if (k === "class") { n.className = attrs[k]; } else { n.setAttribute(k, attrs[k]); } } }
+    if (text != null) { n.textContent = text; }
+    return n;
+  }
+
+  function render(list) {
+    body.textContent = "";
+    list.forEach(function (r, i) {
+      var k = cls(r.score, r.status);
+
+      var tr = el("tr", { class: "main", tabindex: "0" });
+
+      var tdScore = el("td");
+      tdScore.appendChild(el("div", { class: "score " + k }, r.score.toFixed(0)));
+      var meter = el("div", { class: "meter" });
+      var fill = el("i");
+      fill.style.width = Math.max(2, Math.min(100, r.score)) + "%";
+      fill.style.background = colorOf(k);
+      meter.appendChild(fill);
+      tdScore.appendChild(meter);
+      tr.appendChild(tdScore);
+
+      var tdName = el("td");
+      var nameWrap = el("div", { class: "name" });
+      var a = el("a", { href: r.final_url || ("https://" + r.url), target: "_blank", rel: "noopener noreferrer" }, r.name);
+      nameWrap.appendChild(a);
+      tdName.appendChild(nameWrap);
+      tdName.appendChild(el("div", { class: "sub" }, r.url));
+      tr.appendChild(tdName);
+
+      tr.appendChild(el("td", { class: "col-opt" }, r.ort || "–"));
+      tr.appendChild(el("td", { class: "col-opt" }, r.branche || "–"));
+      tr.appendChild(el("td", { class: "col-opt" }, r.cms || "–"));
+
+      var tdStatus = el("td");
+      tdStatus.appendChild(el("span", { class: "tag st-" + r.status }, r.status === "ok" ? "geprueft" : r.status === "fehler" ? "nicht erreichbar" : "gesperrt"));
+      if (r.pagespeed != null) { tdStatus.appendChild(el("div", { class: "sub" }, "PSI " + r.pagespeed)); }
+      tr.appendChild(tdStatus);
+
+      var tdArgs = el("td", { class: "args" });
+      var ul = el("ul");
+      (r.argumente || []).forEach(function (s) { ul.appendChild(el("li", null, s)); });
+      tdArgs.appendChild(ul);
+      tdArgs.appendChild(el("div", { class: "toggle" }, (r.befunde || []).length + " Befunde anzeigen"));
+      tr.appendChild(tdArgs);
+
+      var detail = el("tr", { class: "detail hidden" });
+      var dtd = el("td", { colspan: "7" });
+      dtd.appendChild(el("div", { class: "detail-head" }, "Befunde"));
+      var dul = el("ul", { class: "findings" });
+      (r.befunde || []).forEach(function (s) { dul.appendChild(el("li", null, s)); });
+      dtd.appendChild(dul);
+      detail.appendChild(dtd);
+
+      function toggle() {
+        var hidden = detail.classList.toggle("hidden");
+        tdArgs.querySelector(".toggle").textContent =
+          (hidden ? (r.befunde || []).length + " Befunde anzeigen" : "Befunde ausblenden");
+      }
+      tr.addEventListener("click", function (ev) {
+        if (ev.target.tagName === "A") { return; }
+        toggle();
+      });
+      tr.addEventListener("keydown", function (ev) {
+        if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); toggle(); }
+      });
+
+      body.appendChild(tr);
+      body.appendChild(detail);
+    });
+
+    empty.classList.toggle("hidden", list.length > 0);
+    count.textContent = list.length + " von " + rows.length + " Seiten";
+  }
+
+  function current() {
+    var ort = document.getElementById("f-ort").value;
+    var br = document.getElementById("f-branche").value;
+    var st = document.getElementById("f-status").value;
+    var min = parseFloat(document.getElementById("f-min").value) || 0;
+    var q = document.getElementById("f-text").value.trim().toLowerCase();
+
+    var list = rows.filter(function (r) {
+      if (ort && r.ort !== ort) { return false; }
+      if (br && r.branche !== br) { return false; }
+      if (st && r.status !== st) { return false; }
+      if (r.score < min) { return false; }
+      if (q) {
+        var hay = [r.name, r.url, r.ort, r.branche, r.cms]
+          .concat(r.argumente || [], r.befunde || []).join(" ").toLowerCase();
+        if (hay.indexOf(q) === -1) { return false; }
+      }
+      return true;
+    });
+
+    list.sort(function (a, b) {
+      var x = a[sort.key], y = b[sort.key];
+      if (sort.type === "num") { return (x - y) * sort.dir; }
+      x = (x || "").toString().toLowerCase();
+      y = (y || "").toString().toLowerCase();
+      return x < y ? -sort.dir : x > y ? sort.dir : 0;
+    });
+    return list;
+  }
+
+  function refresh() { render(current()); }
+
+  Array.prototype.forEach.call(document.querySelectorAll("th[data-sort]"), function (th) {
+    th.addEventListener("click", function () {
+      var key = th.getAttribute("data-sort");
+      var type = th.getAttribute("data-type");
+      if (sort.key === key) { sort.dir = -sort.dir; }
+      else { sort.key = key; sort.type = type; sort.dir = type === "num" ? -1 : 1; }
+      Array.prototype.forEach.call(document.querySelectorAll("th[data-sort]"), function (o) {
+        o.removeAttribute("aria-sort");
+        var ar = o.querySelector(".arrow");
+        if (ar) { ar.innerHTML = "&#9671;"; }
+      });
+      th.setAttribute("aria-sort", sort.dir === -1 ? "descending" : "ascending");
+      th.querySelector(".arrow").innerHTML = sort.dir === -1 ? "&#9660;" : "&#9650;";
+      refresh();
+    });
+  });
+
+  ["f-ort", "f-branche", "f-status", "f-min", "f-text"].forEach(function (id) {
+    var node = document.getElementById(id);
+    node.addEventListener(node.tagName === "SELECT" ? "change" : "input", refresh);
+  });
+  document.getElementById("reset").addEventListener("click", function () {
+    ["f-ort", "f-branche", "f-status", "f-min"].forEach(function (id) { document.getElementById(id).selectedIndex = 0; });
+    document.getElementById("f-text").value = "";
+    refresh();
+  });
+
+  refresh();
+})();
+</script>
+</body>
+</html>

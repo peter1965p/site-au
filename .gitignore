@@ -1,0 +1,12 @@
+venv/
+node_modules/
+__pycache__/
+.env
+dist/
+.angular/
+
+# Ausgaben und Cache des Tools
+ergebnis.csv
+ergebnis.html
+*.sqlite
+.pytest_cache/
