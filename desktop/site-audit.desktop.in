@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=site-audit
+GenericName=Website-Audit
+Comment=Firmenwebseiten auf Relaunch-Bedarf prüfen und Akquise-Status pflegen
+Exec=@EXEC@ %f
+Path=@PROJEKT@
+Icon=site-audit
+Terminal=false
+Categories=Office;Database;
+Keywords=audit;website;akquise;leads;seo;relaunch;
+MimeType=text/csv;
+StartupNotify=true
+StartupWMClass=site-audit

@@ -22,6 +22,7 @@ from PySide6.QtCore import (
     QPropertyAnimation,
     QRectF,
     QSize,
+    QSettings,
     QSortFilterProxyModel,
     Property,
     Qt,
@@ -34,6 +35,7 @@ from PySide6.QtGui import (
     QColor,
     QDesktopServices,
     QFont,
+    QIcon,
     QKeySequence,
     QPainter,
     QPalette,
@@ -82,6 +84,12 @@ OK = "#3fb97a"
 
 SCHWELLE_ROT = 60.0
 SCHWELLE_GELB = 35.0
+
+# Muss mit dem Dateinamen der .desktop-Datei uebereinstimmen, sonst ordnet
+# Wayland das Fenster dem Menueeintrag nicht zu und die Leiste zeigt ein
+# generisches Icon statt unserem.
+APP_ID = "site-audit"
+ICON = Path(__file__).resolve().parent / "assets" / "site-audit.svg"
 
 
 def score_farbe(score: float, status: str) -> str:
@@ -457,12 +465,13 @@ class Fenster(QMainWindow):
 
         self.db_pfad = db_pfad
         self.statusbuch = Statusbuch(db_pfad)
+        self.einstellungen = QSettings("paeffgen-it", APP_ID)
         self.csv_pfad: Path | None = None
         self.leads: list[Lead] = []
         self.lauf: LaufThread | None = None
         self._lade_sperre = False
 
-        audit.load_env_file(Path(".env"))
+        audit.load_env_file(Path(__file__).resolve().parent / ".env")
         self.psi_key = (os.environ.get("PSI_KEY") or "").strip() or None
 
         self.model = LeadModel()
@@ -471,6 +480,16 @@ class Fenster(QMainWindow):
 
         self._baue_oberflaeche()
         self._baue_menue()
+
+        self._geometrie_laden()
+
+        # Ohne Argument die zuletzt geoeffnete Liste wiederherstellen: beim
+        # Start aus dem Anwendungsmenue gibt es keine Kommandozeile, und ein
+        # jedes Mal leeres Fenster waere dort nutzlos.
+        if csv_pfad is None:
+            zuletzt = self.einstellungen.value("letzte_csv", "", type=str)
+            if zuletzt and Path(zuletzt).exists():
+                csv_pfad = Path(zuletzt)
 
         if csv_pfad:
             self.csv_laden(csv_pfad)
@@ -744,6 +763,7 @@ class Fenster(QMainWindow):
             QMessageBox.warning(self, "CSV konnte nicht gelesen werden", str(exc))
             return
         self.csv_pfad = pfad
+        self.einstellungen.setValue("letzte_csv", str(pfad.resolve()))
         self.setWindowTitle(f"site-audit — {pfad.name}")
         self.aus_cache_laden()
         self.statusBar().showMessage(
@@ -806,7 +826,7 @@ class Fenster(QMainWindow):
         self.proxy.min_score = float(self.f_min.currentData() or 0)
         self.proxy.nur_faellig = self.chk_faellig.isChecked()
         self.proxy.suche = self.f_suche.text().strip().lower()
-        self.proxy.invalidateRowsFilter()
+        self.proxy.invalidate()
         self.lbl_anzahl.setText(f"{self.proxy.rowCount()} von {self.model.rowCount()}")
 
     # --- Auswahl und Detail ------------------------------------------------
@@ -949,7 +969,7 @@ class Fenster(QMainWindow):
         )
         quelle = self.proxy.mapToSource(self.tabelle.currentIndex())
         self.model.status_aktualisieren(quelle.row(), neu)
-        self.proxy.invalidateRowsFilter()
+        self.proxy.invalidate()
         self.statusBar().showMessage(f"Status gespeichert: {z.result.name} → {neu.status}", 4000)
 
     # --- Lauf --------------------------------------------------------------
@@ -1086,7 +1106,13 @@ class Fenster(QMainWindow):
         if z is not None:
             QDesktopServices.openUrl(QUrl(z.result.final_url or ("https://" + z.result.url)))
 
+    def _geometrie_laden(self) -> None:
+        geo = self.einstellungen.value("geometrie")
+        if geo:
+            self.restoreGeometry(geo)
+
     def closeEvent(self, event) -> None:
+        self.einstellungen.setValue("geometrie", self.saveGeometry())
         if self.lauf is not None and self.lauf.isRunning():
             self.lauf.stoppen()
             self.lauf.wait(5000)
@@ -1147,11 +1173,23 @@ QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(prog="gui.py", description="site-audit mit grafischer Oberflaeche")
     p.add_argument("csv", nargs="?", type=Path, help="Leads-CSV, die beim Start geladen wird")
-    p.add_argument("--cache", type=Path, default=Path(".site-audit-cache.sqlite"))
+    p.add_argument(
+        "--cache",
+        type=Path,
+        default=Path(__file__).resolve().parent / ".site-audit-cache.sqlite",
+        help="Datenbank mit Pruefergebnissen und Akquise-Status",
+    )
     args = p.parse_args(argv)
 
     app = QApplication(sys.argv[:1])
     app.setApplicationName("site-audit")
+    app.setApplicationDisplayName("site-audit")
+    app.setOrganizationName("paeffgen-it")
+    # Verknuepft das Fenster mit dem Menueeintrag - ohne das zeigt die
+    # Taskleiste unter Wayland ein generisches Icon.
+    app.setDesktopFileName(APP_ID)
+    if ICON.exists():
+        app.setWindowIcon(QIcon(str(ICON)))
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)
 

@@ -78,6 +78,31 @@ PySide6 6.12, laeuft mit Python 3.14 (abi3-Wheels, **kein** Qt-Installer noetig)
   "Im Browser öffnen" gehen deshalb in den Standardbrowser des Systems.
 - Tests laufen offscreen ueber `QT_QPA_PLATFORM=offscreen`, ohne Netz.
 
+## Start aus dem Anwendungsmenue
+
+`./install-desktop.sh` erzeugt den Eintrag aus `desktop/site-audit.desktop.in`.
+Drei Dinge, die dabei leicht schiefgehen:
+
+- `app.setDesktopFileName(APP_ID)` muss zum Dateinamen der .desktop passen,
+  sonst ordnet Wayland das Fenster dem Eintrag nicht zu und die Taskleiste
+  zeigt ein generisches Icon.
+- Beim Start aus dem Menue gibt es kein sinnvolles Arbeitsverzeichnis.
+  Datenbank und `.env` werden deshalb relativ zu `gui.py` gesucht.
+- Nur **eine** Hauptkategorie in `Categories`, sonst erscheint die App
+  mehrfach im Menue (`desktop-file-validate` warnt davor).
+
+## Beim Bauen gemachte Fehler, die nicht wieder passieren duerfen
+
+- Fuer einen Screenshot wurden erfundene Akquise-Notizen in die **echte**
+  Datenbank geschrieben ("Termin 15.10. 14 Uhr vor Ort"). Solche Daten sind
+  von echten nicht zu unterscheiden und koennen zu einer Fahrt zu einem
+  Termin fuehren, den es nie gab. Beispieldaten gehoeren in eine temporaere
+  Datei, niemals in `.site-audit-cache.sqlite`.
+- Die GUI-Tests griffen auf die echten QSettings zu. Dadurch stellte ein Test
+  die zuletzt geoeffnete Liste wieder her und startete einen **echten
+  Netzlauf**. Jetzt werden QSettings per Fixture auf einen Wegwerfpfad
+  umgebogen und vor jedem Test geleert.
+
 ## Moegliche naechste Schritte
 
 - `--pagespeed` ist verifiziert (Key liegt in `.env`, nicht im Repo)

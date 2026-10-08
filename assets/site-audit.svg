@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#232c3a"/>
+      <stop offset="1" stop-color="#141a23"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Gehaeuse -->
+  <rect x="6" y="6" width="116" height="116" rx="26" fill="url(#bg)"/>
+  <rect x="6.5" y="6.5" width="115" height="115" rx="25.5" fill="none" stroke="#2f3a4a" stroke-width="1"/>
+
+  <!-- Browserleiste -->
+  <path d="M18 34 h92 v-6 a10 10 0 0 0 -10 -10 h-72 a10 10 0 0 0 -10 10 z" fill="#2a3443"/>
+  <circle cx="30" cy="26" r="3.2" fill="#ef4a5c"/>
+  <circle cx="41" cy="26" r="3.2" fill="#e8a33d"/>
+  <circle cx="52" cy="26" r="3.2" fill="#3fb97a"/>
+
+  <!-- Balken: hoher Score oben, absteigend -->
+  <g stroke-linecap="round" stroke-width="9">
+    <line x1="30" y1="52" x2="98" y2="52" stroke="#222b38"/>
+    <line x1="30" y1="52" x2="88" y2="52" stroke="#ef4a5c"/>
+
+    <line x1="30" y1="70" x2="98" y2="70" stroke="#222b38"/>
+    <line x1="30" y1="70" x2="68" y2="70" stroke="#e8a33d"/>
+
+    <line x1="30" y1="88" x2="98" y2="88" stroke="#222b38"/>
+    <line x1="30" y1="88" x2="48" y2="88" stroke="#3fb97a"/>
+  </g>
+
+  <!-- Lupe -->
+  <g transform="translate(74 74)">
+    <circle cx="14" cy="14" r="17" fill="#11151c" fill-opacity="0.55"/>
+    <circle cx="14" cy="14" r="13.5" fill="none" stroke="#5aa9f7" stroke-width="5"/>
+    <line x1="24" y1="24" x2="34" y2="34" stroke="#5aa9f7" stroke-width="6" stroke-linecap="round"/>
+  </g>
+</svg>

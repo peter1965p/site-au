@@ -18,6 +18,26 @@ python3 -m venv venv
 ./venv/bin/python gui.py leads.csv
 ```
 
+### Ins Anwendungsmenü eintragen
+
+```bash
+./install-desktop.sh
+```
+
+Legt Menüeintrag und Icon unter `~/.local/share` an, ohne Root-Rechte. Danach
+ist „site-audit“ im Anwendungsmenü zu finden und erscheint mit eigenem Icon in
+der Taskleiste. Beim Start aus dem Menü gibt es keine Kommandozeile — die App
+stellt deshalb die zuletzt geöffnete Liste und die Fenstergröße wieder her.
+Datenbank und `.env` werden neben `gui.py` gesucht, nicht im Arbeitsverzeichnis,
+damit das auch beim Start von irgendwoher funktioniert.
+
+Entfernen:
+
+```bash
+rm ~/.local/share/applications/site-audit.desktop \
+   ~/.local/share/icons/hicolor/scalable/apps/site-audit.svg
+```
+
 Liste links, Befunde und Website rechts, darunter der Akquise-Status. Das
 Fenster startet mit dem, was schon im Cache liegt, „Prüfen" holt den Rest.
 Doppelklick auf eine Zeile zeigt die Website im eingebetteten Browser.
@@ -166,7 +186,7 @@ Branche kommen immer frisch aus der CSV, nur die Bewertung stammt aus dem Cache.
 ./venv/bin/python -m pytest
 ```
 
-187 Tests gegen gespeicherte HTML-Fixtures in [tests/fixtures/](tests/fixtures/) —
+192 Tests gegen gespeicherte HTML-Fixtures in [tests/fixtures/](tests/fixtures/) —
 kein Netzzugriff. Abgedeckt sind die Score-Logik (Kombination, Normierung,
 Argumentbau), alle Checks, die Parser für Bildmaße, Telefonnummern und
 Copyright-Jahre, Rate-Limit, Cache, Statusbuch und Ausgabe sowie die GUI
@@ -178,6 +198,9 @@ Copyright-Jahre, Rate-Limit, Cache, Statusbuch und Ausgabe sowie die GUI
 |---|---|
 | [audit.py](audit.py) | Prüflogik und CLI, Gewichte ganz oben |
 | [gui.py](gui.py) | Qt-Oberfläche (PySide6) |
+| [install-desktop.sh](install-desktop.sh) | Menü- und Taskleisteneintrag anlegen |
+| [desktop/](desktop/) | Vorlage für den `.desktop`-Eintrag |
+| [assets/](assets/) | Anwendungssymbol |
 | [templates/report.html.j2](templates/report.html.j2) | HTML-Report |
 | [SPEC.md](SPEC.md) | ursprüngliche Vorgabe |
 | [tests/](tests/) | Tests und HTML-Fixtures |
