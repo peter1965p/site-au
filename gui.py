@@ -458,14 +458,20 @@ class LeadFilter(QSortFilterProxyModel):
 
 
 class Fenster(QMainWindow):
-    def __init__(self, csv_pfad: Path | None, db_pfad: Path) -> None:
+    def __init__(
+        self, csv_pfad: Path | None, db_pfad: Path, einstellungen: QSettings | None = None
+    ) -> None:
         super().__init__()
         self.setWindowTitle("site-audit")
         self.resize(1500, 900)
 
         self.db_pfad = db_pfad
         self.statusbuch = Statusbuch(db_pfad)
-        self.einstellungen = QSettings("paeffgen-it", APP_ID)
+        # Hereinreichbar, damit Tests nicht in die echten Einstellungen des
+        # Benutzers schreiben. Die globale Umlenkung ueber
+        # QSettings.setPath() greift unter Linux nicht, weil NativeFormat
+        # dort nicht IniFormat ist.
+        self.einstellungen = einstellungen or QSettings("paeffgen-it", APP_ID)
         self.csv_pfad: Path | None = None
         self.leads: list[Lead] = []
         self.lauf: LaufThread | None = None

@@ -21,34 +21,20 @@ import gui  # noqa: E402
 from audit import Cache, Result, Statusbuch  # noqa: E402
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _einstellungen_isolieren(tmp_path_factory):
-    """QSettings auf einen Wegwerfpfad umbiegen.
+@pytest.fixture
+def einstellungen(tmp_path):
+    """Wegwerf-Einstellungen pro Test.
 
-    Ohne das lesen und schreiben die Tests die echten Einstellungen des
-    Benutzers. Schlimmer noch: das Fenster stellt die zuletzt geoeffnete Liste
-    wieder her, ein Test wuerde also echte Leads laden und beim Pruefen
-    tatsaechlich ins Netz gehen.
+    Ohne das schreiben die Tests in die echten Einstellungen des Benutzers.
+    Schlimmer noch: das Fenster stellt die zuletzt geoeffnete Liste wieder
+    her, ein Test wuerde also echte Leads laden und beim Pruefen tatsaechlich
+    ins Netz gehen. Die globale Umlenkung ueber QSettings.setPath() taugt
+    dafuer nicht - unter Linux ist NativeFormat nicht IniFormat, und
+    setDefaultFormat() greift fuer bereits benannte Anwendungen nicht.
     """
     from PySide6.QtCore import QSettings
 
-    pfad = tmp_path_factory.mktemp("qsettings")
-    QSettings.setDefaultFormat(QSettings.Format.IniFormat)
-    QSettings.setPath(QSettings.Format.IniFormat, QSettings.Scope.UserScope, str(pfad))
-    yield pfad
-
-
-@pytest.fixture(autouse=True)
-def _einstellungen_leeren(_einstellungen_isolieren):
-    """Jeder Test startet mit leeren Einstellungen.
-
-    Die umgebogenen QSettings gelten fuer die ganze Session; ohne Leeren
-    erbt ein Test die zuletzt geoeffnete Liste des vorigen.
-    """
-    from PySide6.QtCore import QSettings
-
-    QSettings("paeffgen-it", gui.APP_ID).clear()
-    yield
+    return QSettings(str(tmp_path / "einstellungen.ini"), QSettings.Format.IniFormat)
 
 
 @pytest.fixture(scope="session")
@@ -67,7 +53,7 @@ def _result(name: str, url: str, score: float, ort="Daun", branche="Handwerk", s
 
 
 @pytest.fixture
-def fenster(app, tmp_path):
+def fenster(app, tmp_path, einstellungen):
     db = tmp_path / "db.sqlite"
     cache = Cache(db)
     for r in (
@@ -88,7 +74,7 @@ def fenster(app, tmp_path):
         "Delta,delta.de,Daun,Handwerk\n",
         encoding="utf-8",
     )
-    f = gui.Fenster(csv, db)
+    f = gui.Fenster(csv, db, einstellungen)
     yield f
     f.statusbuch.close()
     f.deleteLater()
@@ -325,16 +311,16 @@ def test_kaputte_csv_kippt_das_fenster_nicht(fenster, tmp_path, monkeypatch):
     assert fenster.model.rowCount() == 4, "die alte Liste bleibt stehen"
 
 
-def test_leeres_fenster_hat_kein_aktives_statusfeld(app, tmp_path):
-    f = gui.Fenster(None, tmp_path / "leer.sqlite")
+def test_leeres_fenster_hat_kein_aktives_statusfeld(app, tmp_path, einstellungen):
+    f = gui.Fenster(None, tmp_path / "leer.sqlite", einstellungen)
     assert f.model.rowCount() == 0
     assert f.aktuelle_zeile() is None
     assert not f.statusfeld.isEnabled()
     f.statusbuch.close()
 
 
-def test_lauf_ohne_leads_startet_nicht(app, tmp_path, monkeypatch):
-    f = gui.Fenster(None, tmp_path / "leer.sqlite")
+def test_lauf_ohne_leads_startet_nicht(app, tmp_path, monkeypatch, einstellungen):
+    f = gui.Fenster(None, tmp_path / "leer.sqlite", einstellungen)
     assert not f.leads
     monkeypatch.setattr(gui.QMessageBox, "information", lambda *a, **k: None)
     f.lauf_starten()
@@ -342,32 +328,32 @@ def test_lauf_ohne_leads_startet_nicht(app, tmp_path, monkeypatch):
     f.statusbuch.close()
 
 
-def test_zuletzt_geoeffnete_liste_wird_gemerkt(app, tmp_path):
+def test_zuletzt_geoeffnete_liste_wird_gemerkt(app, tmp_path, einstellungen):
     """Aus dem Anwendungsmenue gestartet gibt es keine Kommandozeile - ein
     jedes Mal leeres Fenster waere dort nutzlos."""
     csv = tmp_path / "meine.csv"
     csv.write_text("name,url\nAlpha,alpha.de\n", encoding="utf-8")
     db = tmp_path / "db.sqlite"
 
-    erst = gui.Fenster(csv, db)
+    erst = gui.Fenster(csv, db, einstellungen)
     assert erst.csv_pfad == csv
     erst.statusbuch.close()
 
-    wieder = gui.Fenster(None, db)
+    wieder = gui.Fenster(None, db, einstellungen)
     assert wieder.csv_pfad == csv
     assert len(wieder.leads) == 1
     wieder.statusbuch.close()
 
 
-def test_verschwundene_liste_wird_nicht_geladen(app, tmp_path):
+def test_verschwundene_liste_wird_nicht_geladen(app, tmp_path, einstellungen):
     csv = tmp_path / "weg.csv"
     csv.write_text("name,url\nAlpha,alpha.de\n", encoding="utf-8")
     db = tmp_path / "db2.sqlite"
-    erst = gui.Fenster(csv, db)
+    erst = gui.Fenster(csv, db, einstellungen)
     erst.statusbuch.close()
     csv.unlink()
 
-    wieder = gui.Fenster(None, db)
+    wieder = gui.Fenster(None, db, einstellungen)
     assert wieder.csv_pfad is None
     assert not wieder.leads
     wieder.statusbuch.close()
