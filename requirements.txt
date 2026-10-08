@@ -1,6 +1,11 @@
+# Kern - wird vom CLI (audit.py) gebraucht
 httpx
 selectolax
 rich
 jinja2
 pytest
 pytest-asyncio
+
+# Oberflaeche - nur fuer gui.py. Das CLI laeuft ohne Qt, damit grosse Laeufe
+# auch auf einer Kiste ohne Desktop durchgehen.
+pyside6

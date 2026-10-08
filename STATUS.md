@@ -52,6 +52,32 @@ Festgehalten, weil sie sich bei Aenderungen leicht wieder einschleichen:
    schrumpfte der Abstand Info-Terra zu Frese & Salbert von Faktor 14 auf 4,7.
    Gewicht daher auf 5 gesenkt (Faktor 6,9), PSI bleibt als Argumentquelle drin.
 
+9. **url_key liess das Schema stehen.** Steht derselbe Lead einmal als
+   `firma.de` und einmal als `https://firma.de` in der CSV, entstanden zwei
+   getrennte Cache- und Status-Eintraege fuer dieselbe Firma. `url_key()`
+   normalisiert das jetzt zentral fuer Cache und Statusbuch.
+
+## Oberflaeche (gui.py)
+
+PySide6 6.12, laeuft mit Python 3.14 (abi3-Wheels, **kein** Qt-Installer noetig).
+
+- Tabelle mit Score-Ampel, Detailbereich, Akquise-Status unten
+- `Schalter`: eigener Schiebeschalter, weil Qt keinen mitbringt. Erbt von
+  QAbstractButton, laesst sich also wie eine QCheckBox ansprechen.
+  `sofort_setzen()` uebernimmt ohne Animation - beim Durchklicken von Leads
+  waere die Animation nur Flackern und sieht nach einer Nutzeraktion aus.
+- Lauf laeuft in einem QThread. SQLite-Verbindungen gehoeren dem Thread, der
+  sie oeffnet, deshalb wird der Cache **im** Thread erzeugt. DB im WAL-Modus,
+  damit die GUI gleichzeitig lesen und schreiben kann.
+- QWebEngineView wird erst beim ersten Blick auf die Vorschau erzeugt; sonst
+  startet bei jedem Programmstart eine Chromium-Instanz, die oft nie gebraucht
+  wird (Fenster ist so nach 0,35 s da). Fehlt QtWebEngine, erklaert der Tab
+  sich selbst statt zu kippen.
+- Die Vorschau ist zwangslaeufig Chromium. Qt kann Firefox nicht einbetten,
+  Mozilla hat die Einbettungs-API fuer Gecko eingestellt. Doppelklick und
+  "Im Browser öffnen" gehen deshalb in den Standardbrowser des Systems.
+- Tests laufen offscreen ueber `QT_QPA_PLATFORM=offscreen`, ohne Netz.
+
 ## Moegliche naechste Schritte
 
 - `--pagespeed` ist verifiziert (Key liegt in `.env`, nicht im Repo)

@@ -17,6 +17,7 @@ import ssl
 import struct
 import sys
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
@@ -1560,9 +1561,26 @@ async def fetch_pagespeed(fetcher: Fetcher, url: str, key: str) -> int | None:
 # ---------------------------------------------------------------------------
 
 
+def url_key(url: str) -> str:
+    """Einheitlicher Schluessel fuer Cache und Statusbuch.
+
+    Schema und abschliessender Schraegstrich fallen weg, damit "firma.de",
+    "https://firma.de" und "https://Firma.DE/" denselben Eintrag treffen.
+    """
+    k = url.strip().lower()
+    for schema in ("https://", "http://"):
+        if k.startswith(schema):
+            k = k[len(schema):]
+            break
+    return k.rstrip("/")
+
+
 class Cache:
     def __init__(self, path: Path) -> None:
-        self.conn = sqlite3.connect(path)
+        self.conn = sqlite3.connect(path, timeout=15)
+        # WAL, damit die GUI im Vordergrund lesen und schreiben kann, waehrend
+        # im Hintergrund ein Lauf Ergebnisse in dieselbe Datei schreibt.
+        self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS audit ("
             " url_key TEXT PRIMARY KEY,"
@@ -1574,7 +1592,7 @@ class Cache:
 
     @staticmethod
     def key(lead: Lead) -> str:
-        return lead.url.strip().lower().rstrip("/")
+        return url_key(lead.url)
 
     def get(self, lead: Lead, max_age_days: int, want_pagespeed: bool) -> Result | None:
         row = self.conn.execute(
@@ -1607,9 +1625,107 @@ class Cache:
             "INSERT INTO audit (url_key, fetched_at, with_pagespeed, payload) VALUES (?,?,?,?) "
             "ON CONFLICT(url_key) DO UPDATE SET fetched_at=excluded.fetched_at,"
             " with_pagespeed=excluded.with_pagespeed, payload=excluded.payload",
-            (result.url.strip().lower().rstrip("/"), result.geprueft_am, int(with_pagespeed), payload),
+            (url_key(result.url), result.geprueft_am, int(with_pagespeed), payload),
         )
         self.conn.commit()
+
+    def close(self) -> None:
+        self.conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Akquise-Status
+# ---------------------------------------------------------------------------
+
+# Reihenfolge ist die Reihenfolge im Auswahlfeld der GUI.
+STATUS_WERTE = [
+    "offen",
+    "angerufen",
+    "wiedervorlage",
+    "termin",
+    "angebot raus",
+    "kunde",
+    "kein Interesse",
+    "nicht passend",
+]
+
+
+@dataclass
+class LeadStatus:
+    """Was nach dem Audit passiert ist. Haengt nicht am Pruefergebnis."""
+
+    url_key: str
+    status: str = "offen"
+    notiz: str = ""
+    wiedervorlage: str = ""  # ISO-Datum oder leer
+    geaendert_am: str = ""
+
+    @property
+    def offen(self) -> bool:
+        return self.status == "offen"
+
+
+class Statusbuch:
+    """Akquise-Status pro Lead, in derselben SQLite-Datei wie der Cache.
+
+    Bewusst getrennt vom Audit-Cache: `--refresh` wirft Pruefergebnisse weg,
+    aber niemals die Notiz, die nach einem Telefonat entstanden ist.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.conn = sqlite3.connect(path, timeout=15)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS lead_status ("
+            " url_key TEXT PRIMARY KEY,"
+            " status TEXT NOT NULL DEFAULT 'offen',"
+            " notiz TEXT NOT NULL DEFAULT '',"
+            " wiedervorlage TEXT NOT NULL DEFAULT '',"
+            " geaendert_am TEXT NOT NULL DEFAULT '')"
+        )
+        self.conn.commit()
+
+    @staticmethod
+    def key(url: str) -> str:
+        return url_key(url)
+
+    def get(self, url: str) -> LeadStatus:
+        k = self.key(url)
+        row = self.conn.execute(
+            "SELECT status, notiz, wiedervorlage, geaendert_am FROM lead_status WHERE url_key = ?",
+            (k,),
+        ).fetchone()
+        if not row:
+            return LeadStatus(url_key=k)
+        return LeadStatus(k, row[0], row[1], row[2], row[3])
+
+    def alle(self) -> dict[str, LeadStatus]:
+        rows = self.conn.execute(
+            "SELECT url_key, status, notiz, wiedervorlage, geaendert_am FROM lead_status"
+        ).fetchall()
+        return {r[0]: LeadStatus(*r) for r in rows}
+
+    def setzen(self, url: str, status: str, notiz: str = "", wiedervorlage: str = "") -> LeadStatus:
+        k = self.key(url)
+        jetzt = datetime.now().isoformat(timespec="seconds")
+        self.conn.execute(
+            "INSERT INTO lead_status (url_key, status, notiz, wiedervorlage, geaendert_am)"
+            " VALUES (?,?,?,?,?)"
+            " ON CONFLICT(url_key) DO UPDATE SET status=excluded.status, notiz=excluded.notiz,"
+            " wiedervorlage=excluded.wiedervorlage, geaendert_am=excluded.geaendert_am",
+            (k, status, notiz, wiedervorlage, jetzt),
+        )
+        self.conn.commit()
+        return LeadStatus(k, status, notiz, wiedervorlage, jetzt)
+
+    def faellige_wiedervorlagen(self, stichtag: str | None = None) -> list[LeadStatus]:
+        tag = stichtag or datetime.now().date().isoformat()
+        rows = self.conn.execute(
+            "SELECT url_key, status, notiz, wiedervorlage, geaendert_am FROM lead_status"
+            " WHERE wiedervorlage != '' AND wiedervorlage <= ? ORDER BY wiedervorlage",
+            (tag,),
+        ).fetchall()
+        return [LeadStatus(*r) for r in rows]
 
     def close(self) -> None:
         self.conn.close()
@@ -1652,40 +1768,48 @@ def read_leads(path: Path) -> list[Lead]:
 
 CSV_COLUMNS = [
     "score", "name", "ort", "branche", "url", "final_url", "status", "cms",
-    "pagespeed", "argumente", "befunde", "geprueft_am",
+    "pagespeed", "akquise", "wiedervorlage", "notiz", "argumente", "befunde",
+    "geprueft_am",
 ]
 
 
-def write_csv(results: list[Result], path: Path) -> None:
+def write_csv(results: list[Result], path: Path, status: dict[str, LeadStatus] | None = None) -> None:
+    status = status or {}
     sev_cols = [f"s_{k}" for k in WEIGHTS]
     with path.open("w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh, delimiter=";")
         writer.writerow(CSV_COLUMNS + sev_cols)
         for r in results:
+            st = status.get(Statusbuch.key(r.url), LeadStatus(url_key=""))
             writer.writerow(
                 [
                     f"{r.score:.1f}", r.name, r.ort, r.branche, r.url, r.final_url,
                     r.status, r.cms, "" if r.pagespeed is None else r.pagespeed,
+                    st.status, st.wiedervorlage, st.notiz,
                     " ".join(r.argumente), " | ".join(r.befunde), r.geprueft_am,
                 ]
                 + ["" if r.severities.get(k) is None else f"{r.severities[k]:.2f}" for k in WEIGHTS]
             )
 
 
-def write_html(results: list[Result], path: Path, source: str) -> None:
+def write_html(
+    results: list[Result], path: Path, source: str, status: dict[str, LeadStatus] | None = None
+) -> None:
     env = Environment(
         loader=FileSystemLoader(Path(__file__).parent / "templates"),
         autoescape=select_autoescape(["html"]),
     )
     template = env.get_template("report.html.j2")
-    rows = [
-        {
+    status = status or {}
+    rows = []
+    for r in results:
+        st = status.get(Statusbuch.key(r.url), LeadStatus(url_key=""))
+        rows.append({
             "name": r.name, "url": r.url, "final_url": r.final_url, "ort": r.ort,
             "branche": r.branche, "score": r.score, "status": r.status, "cms": r.cms,
             "pagespeed": r.pagespeed, "argumente": r.argumente, "befunde": r.befunde,
-        }
-        for r in results
-    ]
+            "akquise": st.status, "notiz": st.notiz, "wiedervorlage": st.wiedervorlage,
+        })
     html = template.render(
         rows=rows,
         orte=sorted({r.ort for r in results if r.ort}),
@@ -1738,51 +1862,87 @@ def load_env_file(path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-async def run(leads: list[Lead], args: argparse.Namespace, cache: Cache | None, psi_key: str | None) -> list[Result]:
+async def run(
+    leads: list[Lead],
+    args: argparse.Namespace,
+    cache: Cache | None,
+    psi_key: str | None,
+    melde: "Callable[[int, int, Result, bool], None] | None" = None,
+    abbruch: "Callable[[], bool] | None" = None,
+) -> list[Result]:
+    """Alle Leads pruefen.
+
+    `melde(fertig, gesamt, ergebnis, aus_cache)` wird nach jedem Lead gerufen.
+    Ohne Callback zeichnet die Funktion selbst einen rich-Fortschritt - die GUI
+    uebergibt stattdessen ihren eigenen und bekommt so keine Terminalausgabe.
+    `abbruch()` wird vor jedem Lead geprueft; liefert es True, bricht der Lauf
+    kontrolliert ab und gibt zurueck, was bis dahin fertig war.
+    """
     limiter = HostLimiter(args.host_interval)
     fetcher = Fetcher(args.timeout, limiter)
     sem = asyncio.Semaphore(args.concurrency)
     results: list[Result] = []
+    gesamt = len(leads)
 
-    columns = [
-        SpinnerColumn(),
-        TextColumn("[bold]{task.description}"),
-        BarColumn(),
-        MofNCompleteColumn(),
-        TimeElapsedColumn(),
-    ]
-    with Progress(*columns, console=console) as progress:
-        task = progress.add_task("Pruefe Seiten", total=len(leads))
+    progress = None
+    task = None
+    if melde is None:
+        progress = Progress(
+            SpinnerColumn(),
+            TextColumn("[bold]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            TimeElapsedColumn(),
+            console=console,
+        )
+        progress.start()
+        task = progress.add_task("Pruefe Seiten", total=gesamt)
 
-        async def worker(lead: Lead) -> None:
-            cached = None
-            if cache is not None and not args.refresh:
-                cached = cache.get(lead, args.max_age, args.pagespeed)
-            if cached is not None:
-                results.append(cached)
-                progress.console.log(f"[dim]cache[/dim]  {cached.score:5.1f}  {lead.name}")
-                progress.advance(task)
-                return
-            async with sem:
-                try:
-                    res = await audit_lead(lead, fetcher, args, psi_key)
-                except Exception as exc:  # noqa: BLE001 - nie den ganzen Lauf kippen
-                    res = Result(
-                        lead.name, lead.url, lead.ort, lead.branche, "", "fehler", 100.0, "",
-                        ["Die Pruefung ist abgebrochen, Seite manuell ansehen."],
-                        [f"[Pruefung] Interner Fehler: {type(exc).__name__}: {exc}"],
-                        {}, datetime.now().isoformat(timespec="seconds"),
-                    )
-            results.append(res)
-            if cache is not None:
-                cache.put(res, args.pagespeed)
-            color = "red" if res.score >= 60 else "yellow" if res.score >= 35 else "green"
-            progress.console.log(f"[{color}]{res.score:5.1f}[/{color}]  {lead.name}  [dim]{res.cms or res.status}[/dim]")
+    def fertig(res: Result, aus_cache: bool) -> None:
+        results.append(res)
+        if progress is not None:
+            if aus_cache:
+                progress.console.log(f"[dim]cache[/dim]  {res.score:5.1f}  {res.name}")
+            else:
+                farbe = "red" if res.score >= 60 else "yellow" if res.score >= 35 else "green"
+                progress.console.log(
+                    f"[{farbe}]{res.score:5.1f}[/{farbe}]  {res.name}  [dim]{res.cms or res.status}[/dim]"
+                )
             progress.advance(task)
+        else:
+            melde(len(results), gesamt, res, aus_cache)
 
+    async def worker(lead: Lead) -> None:
+        if abbruch is not None and abbruch():
+            return
+        if cache is not None and not args.refresh:
+            cached = cache.get(lead, args.max_age, args.pagespeed)
+            if cached is not None:
+                fertig(cached, True)
+                return
+        async with sem:
+            if abbruch is not None and abbruch():
+                return
+            try:
+                res = await audit_lead(lead, fetcher, args, psi_key)
+            except Exception as exc:  # noqa: BLE001 - nie den ganzen Lauf kippen
+                res = Result(
+                    lead.name, lead.url, lead.ort, lead.branche, "", "fehler", 100.0, "",
+                    ["Die Pruefung ist abgebrochen, Seite manuell ansehen."],
+                    [f"[Pruefung] Interner Fehler: {type(exc).__name__}: {exc}"],
+                    {}, datetime.now().isoformat(timespec="seconds"),
+                )
+        if cache is not None:
+            cache.put(res, args.pagespeed)
+        fertig(res, False)
+
+    try:
         await asyncio.gather(*(worker(lead) for lead in leads))
+    finally:
+        if progress is not None:
+            progress.stop()
+        await fetcher.aclose()
 
-    await fetcher.aclose()
     results.sort(key=lambda r: (-r.score, r.name.lower()))
     return results
 
@@ -1826,6 +1986,9 @@ def main(argv: list[str] | None = None) -> int:
             console.print("[yellow]PSI_KEY nicht gesetzt - PageSpeed-Check wird uebersprungen.[/yellow]")
 
     cache = None if args.no_cache else Cache(args.cache)
+    # Das Statusbuch wird immer geoeffnet, auch bei --no-cache: es haelt
+    # Gespraechsnotizen, nicht Pruefergebnisse.
+    statusbuch = Statusbuch(args.cache)
 
     console.print(
         f"[bold]site-audit[/bold]  {len(leads)} Leads aus {args.csv}  "
@@ -1844,12 +2007,20 @@ def main(argv: list[str] | None = None) -> int:
             out = out[: -len(suffix)]
     csv_path = Path(out + ".csv")
     html_path = Path(out + ".html")
-    write_csv(results, csv_path)
-    write_html(results, html_path, str(args.csv))
+    status = statusbuch.alle()
+    write_csv(results, csv_path, status)
+    write_html(results, html_path, str(args.csv), status)
 
     console.print()
     print_table(results)
     console.print(f"\n[green]Geschrieben:[/green] {csv_path}  und  {html_path}")
+
+    faellig = statusbuch.faellige_wiedervorlagen()
+    if faellig:
+        console.print(f"\n[yellow]{len(faellig)} Wiedervorlage(n) faellig:[/yellow]")
+        for st in faellig[:10]:
+            console.print(f"  {st.wiedervorlage}  {st.url_key}  [dim]{st.notiz[:60]}[/dim]")
+    statusbuch.close()
     return 0
 
 

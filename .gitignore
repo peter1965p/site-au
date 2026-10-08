@@ -10,3 +10,4 @@ ergebnis.csv
 ergebnis.html
 *.sqlite
 .pytest_cache/
+*.pdf

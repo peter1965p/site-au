@@ -12,7 +12,28 @@ python3 -m venv venv
 ./venv/bin/python -m pip install -r requirements.txt
 ```
 
-## Aufruf
+## Oberfläche
+
+```bash
+./venv/bin/python gui.py leads.csv
+```
+
+Liste links, Befunde und Website rechts, darunter der Akquise-Status. Das
+Fenster startet mit dem, was schon im Cache liegt, „Prüfen" holt den Rest.
+Doppelklick auf eine Zeile zeigt die Website im eingebetteten Browser.
+
+Der Akquise-Status (offen, angerufen, Wiedervorlage, Termin, Angebot raus,
+Kunde, kein Interesse, nicht passend), eine Notiz und ein Wiedervorlage-Datum
+gehören zum Lead, nicht zum Prüfergebnis: `--refresh` wirft Befunde weg, die
+Notiz aus einem Telefonat bleibt. Beides landet in derselben SQLite-Datei und
+erscheint in `ergebnis.csv` sowie im HTML-Report.
+
+„One-Pager als PDF" erzeugt eine Seite zur Gesprächsvorbereitung mit Score,
+Argumenten, allen Befunden und Platz für handschriftliche Notizen.
+
+Fällige Wiedervorlagen zeigt auch das CLI am Ende jedes Laufs an.
+
+## Aufruf (CLI)
 
 ```bash
 ./venv/bin/python audit.py leads.csv --out ergebnis
@@ -145,16 +166,18 @@ Branche kommen immer frisch aus der CSV, nur die Bewertung stammt aus dem Cache.
 ./venv/bin/python -m pytest
 ```
 
-141 Tests gegen gespeicherte HTML-Fixtures in [tests/fixtures/](tests/fixtures/) —
+187 Tests gegen gespeicherte HTML-Fixtures in [tests/fixtures/](tests/fixtures/) —
 kein Netzzugriff. Abgedeckt sind die Score-Logik (Kombination, Normierung,
 Argumentbau), alle Checks, die Parser für Bildmaße, Telefonnummern und
-Copyright-Jahre sowie Rate-Limit, Cache und Ausgabe.
+Copyright-Jahre, Rate-Limit, Cache, Statusbuch und Ausgabe sowie die GUI
+(Filter, Statuspflege, PDF-Export) offscreen über `QT_QPA_PLATFORM=offscreen`.
 
 ## Dateien
 
 | Datei | Zweck |
 |---|---|
-| [audit.py](audit.py) | das gesamte Tool, Gewichte ganz oben |
+| [audit.py](audit.py) | Prüflogik und CLI, Gewichte ganz oben |
+| [gui.py](gui.py) | Qt-Oberfläche (PySide6) |
 | [templates/report.html.j2](templates/report.html.j2) | HTML-Report |
 | [SPEC.md](SPEC.md) | ursprüngliche Vorgabe |
 | [tests/](tests/) | Tests und HTML-Fixtures |
