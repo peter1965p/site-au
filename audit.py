@@ -55,7 +55,12 @@ WEIGHTS: dict[str, float] = {
     "bilder": 6.0,  # Seitengewicht, Riesenbilder, Mini-Bilder
     "kontakt": 6.0,  # kein tel:-Link, kein Kontaktformular
     "konsistenz": 3.0,  # widerspruechliche Telefonnummern
-    "pagespeed": 10.0,  # nur mit --pagespeed und PSI_KEY
+    # Bewusst niedrig: PSI misst Geschwindigkeit, nicht Zeitgemaessheit.
+    # Alte Baukastenseiten sind klein und dadurch schnell, moderne Seiten
+    # mit viel Bildmaterial langsam - gemessen an unseren Testseiten
+    # korreliert ein hoher PSI-Wert mit +0,82 zum Chaos-Score. Ein hohes
+    # Gewicht wuerde die besten Leads nach unten ziehen.
+    "pagespeed": 5.0,  # nur mit --pagespeed und PSI_KEY
 }
 
 # Ab dieser gewichteten Punktsumme gilt eine Seite als Totalschaden (Score 100).

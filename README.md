@@ -74,10 +74,19 @@ oben in [audit.py](audit.py) und sind zum Anpassen gedacht:
 | `bilder` | 6 | Seitengewicht, Einzelbilder über 1,5 MB, Anteil Bilder unter 400 px |
 | `kontakt` | 6 | kein `tel:`-Link, kein Kontaktformular |
 | `konsistenz` | 3 | Telefonnummer in der Meta-Description weicht vom Seitentext ab |
-| `pagespeed` | 10 | nur mit `--pagespeed`, mobiler Score der PSI-API |
+| `pagespeed` | 5 | nur mit `--pagespeed`, mobiler Score der PSI-API |
 
 Checks, die nicht laufen konnten, fallen aus der Rechnung heraus — `--pagespeed`
 verschiebt die Skala also nicht.
+
+`pagespeed` ist absichtlich das zweitniedrigste Gewicht. PSI misst
+Geschwindigkeit, nicht Zeitgemäßheit, und beides fällt bei dieser Zielgruppe
+auseinander: eine Jimdo-Seite von 2011 ist winzig und lädt schnell, eine
+moderne Seite mit viel Bildmaterial ist schwer. Über die fünf Testseiten
+korreliert der PSI-Wert mit **+0,82** zum Chaos-Score — ein hohes Gewicht würde
+also genau die besten Leads nach unten ziehen. Mit 5 liefert der Check noch
+brauchbare Gesprächsargumente („Google bewertet Ihre Seite mit 27 von 100"),
+ohne die Rangfolge zu verdrehen.
 
 Bezugsgröße ist nicht die volle Gewichtssumme, sondern `SCORE_REFERENZ` (75),
 ebenfalls oben in der Datei. Grund: keine reale Seite fällt in allen elf

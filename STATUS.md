@@ -44,8 +44,16 @@ Festgehalten, weil sie sich bei Aenderungen leicht wieder einschleichen:
    Meta-Description selbst enthaelt - die gesuchte Nummer stand dadurch immer
    auch "im Text". Jetzt nur sichtbarer Text plus `tel:`-Links.
 
+8. **PageSpeed zog die besten Leads nach unten.** Nachdem der `PSI_KEY` da war
+   und `--pagespeed` erstmals echt lief, zeigte sich: PSI misst Geschwindigkeit,
+   nicht Zeitgemaessheit. Alte Baukastenseiten sind klein und schnell, moderne
+   Seiten mit viel Bildmaterial langsam - ueber die fuenf Testseiten korreliert
+   der PSI-Wert mit **+0,82** zum Chaos-Score. Mit dem anfaenglichen Gewicht 10
+   schrumpfte der Abstand Info-Terra zu Frese & Salbert von Faktor 14 auf 4,7.
+   Gewicht daher auf 5 gesenkt (Faktor 6,9), PSI bleibt als Argumentquelle drin.
+
 ## Moegliche naechste Schritte
 
-- Noch kein Commit im Repo (Branch `master`), falls gewuenscht
-- `--pagespeed` ist gebaut, aber mangels `PSI_KEY` noch nie echt gelaufen
+- `--pagespeed` ist verifiziert (Key liegt in `.env`, nicht im Repo)
 - Groessere Lead-Listen: `--assets 5` setzen, das dominiert die Laufzeit
+- PSI kostet rund 15 s pro Seite, besser nur auf die Top-Kandidaten anwenden
