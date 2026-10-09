@@ -104,6 +104,16 @@ APP_ID = "site-audit"
 ICON = Path(__file__).resolve().parent / "assets" / "site-audit.svg"
 
 
+def suche_sinnvoll(r) -> bool:
+    """Lohnt der Suchknopf? Ja, wenn kein Kontaktweg da ist - oder wenn die Domain nichts taugt.
+
+    Bei einer Platzhalterseite oder einer toten Adresse ist die Domain aus
+    OpenStreetMap oft schlicht veraltet, und die echte Seite liegt woanders. Ein
+    Anruf mit "Sie haben keine Website" waere dann falsch.
+    """
+    return (not (r.telefon or r.email)) or r.status != "ok" or r.severities.get("substanz") == 1.0
+
+
 def score_farbe(score: float | None, status: str) -> str:
     # Nicht bewertete Seiten (nicht erreichbar, Pruefung gescheitert) bekommen
     # keine Ampelfarbe - Rot oder Gruen wuerde ein Urteil vortaeuschen.
@@ -1074,10 +1084,10 @@ class Fenster(QMainWindow):
         self.btn_pdf = QPushButton("One-Pager als PDF …")
         self.btn_pdf.clicked.connect(self.pdf_exportieren)
         knoepfe.addWidget(self.btn_pdf)
-        self.btn_kontaktsuche = QPushButton("Kontakt suchen ▾")
+        self.btn_kontaktsuche = QPushButton("Suchen ▾")
         self.btn_kontaktsuche.setToolTip(
-            "Öffnet eine vorbereitete Suche im Standardbrowser:\n"
-            "Das Örtliche, Gelbe Seiten, 11880 oder Google."
+            "Öffnet eine vorbereitete Suche im Standardbrowser: die echte Website, das Örtliche,\n"
+            "Gelbe Seiten, 11880 oder Google. Sinnvoll, wenn Kontakt fehlt oder die Domain nichts taugt."
         )
         self.btn_kontaktsuche.clicked.connect(self.kontakt_im_netz_suchen)
         self.btn_kontaktsuche.setVisible(False)
@@ -1384,8 +1394,7 @@ class Fenster(QMainWindow):
         if wege:
             teile.append("&nbsp;&nbsp;".join(wege))
         self.kontaktleiste.setText("<br>".join(teile))
-        # Der Knopf lohnt nur, wenn wirklich nichts da ist
-        self.btn_kontaktsuche.setVisible(not (r.telefon or r.email))
+        self.btn_kontaktsuche.setVisible(suche_sinnvoll(r))
 
     def _such_menue(self) -> QMenu:
         """Menue mit den Verzeichnissen, in denen von Hand gesucht werden darf."""

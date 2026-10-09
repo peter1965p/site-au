@@ -190,6 +190,10 @@ def such_links(name: str, ort: str = "", website: str = "") -> list[tuple[str, s
     firma = name.strip()
     mit_ort = f"{firma} {ort}".strip()
     links = [
+        # Zuerst: Gibt es die Firma unter einer anderen Domain? Die Adresse aus
+        # OpenStreetMap ist oft veraltet (Beispiel: frida-see.de zeigt nur eine
+        # Platzhalterseite, die echte Seite ist fridaamsee.de).
+        ("Echte Website suchen (Google)", f"https://www.google.com/search?q={quote_plus(mit_ort)}"),
         ("Das Örtliche", oertliche_url(firma, ort)),
         ("Gelbe Seiten", f"https://www.gelbeseiten.de/suche/{quote_plus(firma)}/{quote_plus(ort or 'deutschland')}"),
         ("11880", f"https://www.11880.com/suche/{quote_plus(firma)}/{quote_plus(ort or 'deutschland')}"),

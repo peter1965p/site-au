@@ -701,5 +701,26 @@ async def test_bei_fehlender_website_kommt_der_hinweis_den_betrieb_zu_pruefen():
     seite = Fetched(url="https://frida.example", final_url="https://frida.example/", status=200,
                     html=html, html_bytes=len(html))
     res = await _pruefen(seite, lead=Lead("Frida", "frida.example", telefon="+49 5139 99640"))
-    assert "noch existiert" in res.empfehlung_grund
-    assert "aufgegeben" in res.empfehlung_grund
+    assert "Existiert der Betrieb noch" in res.empfehlung_grund
+
+
+# --- OSM-Domain kann veraltet sein (Frida am See: frida-see.de statt fridaamsee.de) -------
+
+
+async def test_hinweis_nennt_die_moeglich_veraltete_adresse():
+    html = load_fixture("baustelle_seite.html")
+    seite = Fetched(url="https://frida.example", final_url="https://frida.example/", status=200,
+                    html=html, html_bytes=len(html))
+    res = await _pruefen(seite, lead=Lead("Frida", "frida.example", telefon="+49 5139 99640"))
+    assert "stimmt die Adresse" in res.empfehlung_grund
+    assert "OpenStreetMap" in res.empfehlung_grund
+    assert "googeln" in res.empfehlung_grund
+
+
+def test_suche_nach_der_echten_website_ist_der_erste_eintrag():
+    import kontaktsuche
+
+    links = kontaktsuche.such_links("Frida am See", "Burgwedel", "frida-see.de")
+    assert links[0][0] == "Echte Website suchen (Google)"
+    assert "Frida+am+See+Burgwedel" in links[0][1]
+    assert "impressum" not in links[0][1].lower(), "eine schlichte Suche, ohne Zusatzwoerter"

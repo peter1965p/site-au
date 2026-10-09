@@ -516,8 +516,9 @@ def naechster_schritt(res: Result) -> tuple[str, str]:
         return (
             "Anruf" if res.telefon else "Kontakt suchen",
             f"Keine Website unter der Domain - der klarste Anlass ueberhaupt, {weg}. "
-            "Vorher kurz pruefen, ob der Betrieb noch existiert: eine Platzhalterseite "
-            "kann auch bedeuten, dass er aufgegeben hat.",
+            "Vorher kurz pruefen: Existiert der Betrieb noch? Und stimmt die Adresse? Die Domain "
+            "stammt oft aus OpenStreetMap und kann veraltet sein - die echte Seite liegt dann "
+            "unter einer anderen (Name + Ort googeln).",
         )
 
     if res.score < SCHWELLE_LOHNT:

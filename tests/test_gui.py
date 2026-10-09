@@ -802,3 +802,33 @@ def test_schliessen_mit_sauber_endendem_lauf_ist_normal(fenster, monkeypatch):
     fenster.lauf = _LaufAttrappe(beendet=True)
     fenster.closeEvent(QCloseEvent())
     fenster.lauf = None
+
+
+# --- Suchknopf: auch wenn die Domain nichts taugt ---------------------------------------
+
+
+def _ergebnis_mit(**kw):
+    basis = dict(name="X", url="x.de", ort="", branche="", final_url="", status="ok", score=50.0, cms="",
+                 argumente=[], befunde=[], severities={}, geprueft_am="2026-10-09T10:00:00",
+                 telefon="06591 1", email="")
+    basis.update(kw)
+    return Result(**basis)
+
+
+def test_suchknopf_bei_vorhandenem_kontakt_und_gesunder_seite_nicht():
+    assert gui.suche_sinnvoll(_ergebnis_mit()) is False
+
+
+def test_suchknopf_ohne_kontakt():
+    assert gui.suche_sinnvoll(_ergebnis_mit(telefon="", email="")) is True
+
+
+def test_suchknopf_bei_platzhalterseite_auch_mit_telefon():
+    """Frida am See: Telefon aus OpenStreetMap da, aber die Domain zeigt nur einen
+    Platzhalter - die echte Seite liegt woanders."""
+    assert gui.suche_sinnvoll(_ergebnis_mit(severities={"substanz": 1.0})) is True
+
+
+def test_suchknopf_bei_nicht_erreichbarer_seite_auch_mit_telefon():
+    r = audit.unbewertet(audit.Lead("X", "x.de", telefon="06591 1"), "", audit.STATUS_UNERREICHBAR, "dns", "x", "t")
+    assert gui.suche_sinnvoll(r) is True
