@@ -12,3 +12,5 @@ ergebnis.html
 .pytest_cache/
 *.pdf
 .kreise.json
+*.sqlite-wal
+*.sqlite-shm
