@@ -78,12 +78,19 @@ SCORE_REFERENZ = 75.0
 USER_AGENT = "site-audit/1.0 (+paeffgen-it.de)"
 ROBOTS_AGENT = "site-audit"
 
-MAX_PARALLEL = 10  # gleichzeitig geprüfte Seiten
+# Gleichzeitig gepruefte Seiten. Die Hoeflichkeit gegenueber den Seiten regelt
+# HOST_INTERVAL (1 Request pro Sekunde und Host), nicht diese Zahl: Jede Seite
+# gehoert einem anderen Host, mehr parallele Firmen belasten also keinen Host
+# staerker. Eine Firma braucht rund 10 s, fast alles davon ist Warten auf den
+# Takt - mit 10 Plaetzen ergibt das nur ~35 Firmen pro Minute.
+MAX_PARALLEL = 30
 HOST_INTERVAL = 1.0  # Sekunden Mindestabstand zwischen Requests pro Host
 DEFAULT_TIMEOUT = 20.0
-RETRIES = 3            # Versuche pro Kandidaten-URL bei Netzfehlern
+CONNECT_TIMEOUT = 8.0  # Verbindungsaufbau; wer in 8 s nicht antwortet, antwortet meist gar nicht
+TIMEOUT_VERSUCHE = 2   # bei Zeitueberschreitung nur einmal wiederholen
+RETRIES = 3            # Versuche pro Kandidaten-URL bei sonstigen Netzfehlern
 RETRY_BACKOFF = 1.5    # Sekunden, waechst mit jedem Fehlversuch
-DEFAULT_ASSETS = 15  # wie viele Bilder/CSS/JS pro Seite vermessen werden
+DEFAULT_ASSETS = 6  # wie viele Bilder/CSS/JS pro Seite vermessen werden (Inhaltsbilder zuerst)
 ASSET_PEEK = 32 * 1024  # so viele Bytes pro Asset lesen wir maximal
 
 CURRENT_YEAR = datetime.now().year
@@ -147,8 +154,8 @@ class AssetInfo:
     measured: int = 0
     total_bytes: int = 0
     oversized: list[tuple[str, int]] = field(default_factory=list)
-    images_measured: int = 0
-    images_small: int = 0
+    images_measured: int = 0  # nur Inhaltsbilder mit bekannter Breite
+    images_small: int = 0  # davon schmaler als SMALL_IMAGE_PX
 
 
 @dataclass
@@ -172,6 +179,47 @@ class Context:
     psi_ran: bool = False
 
 
+STATUS_OK = "ok"
+STATUS_UNERREICHBAR = "nicht erreichbar"
+STATUS_PRUEFFEHLER = "pruefung fehlgeschlagen"  # eigener Fehler, nicht der der Seite
+
+GRUND_TEXT = {
+    "timeout": "Zeitueberschreitung",
+    "dns": "Adresse nicht aufloesbar",
+    "verbindung": "Verbindung fehlgeschlagen",
+    "http5xx": "Serverfehler (HTTP 5xx)",
+    "weiterleitungen": "zu viele Weiterleitungen",
+    "robots": "per robots.txt fuer automatische Pruefung gesperrt",
+}
+
+
+def grund_aus_text(text: str) -> str:
+    """Grund einer Nichterreichbarkeit aus einer Fehlermeldung ableiten."""
+    t = text.lower()
+    if "timeout" in t or "zeitueberschreitung" in t:
+        return "timeout"
+    if any(k in t for k in ("name or service not known", "nodename nor servname", "no address associated",
+                            "name resolution", "errno -2", "errno -5", "gaierror")):
+        return "dns"
+    if "weiterleitungen" in t or "redirect" in t:
+        return "weiterleitungen"
+    if "http 5" in t:
+        return "http5xx"
+    return "verbindung"
+
+
+def ist_dauerhaft_tot(text: str) -> bool:
+    """Die Adresse gibt es nicht (DNS). Wiederholen und http bringen nichts.
+
+    Bewusst nur die endgueltigen Faelle. "Temporary failure in name resolution"
+    (Errno -3) ist ein Aussetzer und darf wiederholt werden.
+    """
+    t = text.lower()
+    return any(
+        k in t for k in ("name or service not known", "nodename nor servname", "no address associated", "errno -2", "errno -5")
+    )
+
+
 @dataclass
 class Result:
     name: str
@@ -179,8 +227,8 @@ class Result:
     ort: str
     branche: str
     final_url: str
-    status: str  # ok | fehler | gesperrt
-    score: float
+    status: str  # ok | nicht erreichbar | pruefung fehlgeschlagen
+    score: float | None  # None = nicht bewertet (Seite nicht erreichbar)
     cms: str
     argumente: list[str]
     befunde: list[str]
@@ -193,6 +241,35 @@ class Result:
     kontaktformular: bool = False
     empfehlung: str = ""  # Anruf | Mail | Kontaktformular | ...
     empfehlung_grund: str = ""
+    unerreichbar_grund: str = ""  # timeout | dns | verbindung | http5xx | weiterleitungen | robots
+
+    def __post_init__(self) -> None:
+        """Altbestand aus dem Cache auf die neuen Status umstellen.
+
+        Bis zur Umstellung hiessen diese Faelle "fehler" und "gesperrt" und
+        trugen einen Score (100 bzw. 0). Wer den Cache liest, soll dasselbe
+        sehen wie nach einem Neulauf - ohne dass tausende Eintraege neu
+        geprueft werden muessen.
+        """
+        if self.status == "gesperrt":
+            self.status, self.unerreichbar_grund = STATUS_UNERREICHBAR, "robots"
+        elif self.status == "fehler":
+            if any("[Pruefung]" in b for b in self.befunde):
+                self.status = STATUS_PRUEFFEHLER
+            else:
+                self.status = STATUS_UNERREICHBAR
+                self.unerreichbar_grund = self.unerreichbar_grund or grund_aus_text(" ".join(self.befunde))
+        elif self.status == "ok" and any("Server antwortet mit HTTP 5" in b for b in self.befunde):
+            self.status, self.unerreichbar_grund = STATUS_UNERREICHBAR, "http5xx"
+        else:
+            return
+        self.score = None
+        self.empfehlung, self.empfehlung_grund = naechster_schritt(self)
+
+    @property
+    def bewertet(self) -> bool:
+        """Hat einen Chaos-Score. Nicht erreichbare Seiten haben keinen."""
+        return self.score is not None
 
 
 # ---------------------------------------------------------------------------
@@ -237,7 +314,7 @@ def ssl_reason(exc: BaseException) -> str | None:
         if seen is None:
             break
         if isinstance(seen, ssl.SSLCertVerificationError):
-            return seen.verify_message or str(seen)
+            return getattr(seen, "verify_message", None) or str(seen)
         if isinstance(seen, ssl.SSLError):
             return str(seen)
         seen = seen.__cause__ or seen.__context__
@@ -423,18 +500,24 @@ def naechster_schritt(res: Result) -> tuple[str, str]:
     Zwei Fragen zugleich: Lohnt es sich (Score), und welcher Weg steht offen
     (Kontaktdaten). Ein hoher Score nuetzt nichts, wenn es keinen Draht gibt.
     """
-    if res.status == "gesperrt":
-        return "manuell ansehen", "Die Seite verbietet die automatische Pruefung."
-    if res.status == "fehler":
-        if res.telefon:
-            return "Anruf", "Die Website ist nicht erreichbar - das ist der beste Aufhaenger."
-        return "manuell ansehen", "Website nicht erreichbar, keine Telefonnummer ermittelt."
+    if res.status == STATUS_UNERREICHBAR:
+        if res.unerreichbar_grund == "robots":
+            return "manuell ansehen", "Die Seite verbietet die automatische Pruefung - von Hand ansehen."
+        grund = GRUND_TEXT.get(res.unerreichbar_grund, "nicht erreichbar")
+        # Bewusst kein "Anruf": eine tote Adresse stammt oft aus einem
+        # Tippfehler in der Quelle, und ein Ausfall kann voruebergehend sein.
+        # Wer deshalb anruft, steht mit einer falschen Behauptung da.
+        return "manuell ansehen", f"{grund} - erst im Browser pruefen, ob die Adresse stimmt und die Seite wirklich fehlt."
+    if res.status == STATUS_PRUEFFEHLER:
+        return "manuell ansehen", "Die automatische Pruefung ist fehlgeschlagen."
 
     if res.severities.get("substanz") == 1.0:
         weg = "Nummer liegt vor" if res.telefon else "Kontaktweg muss noch gesucht werden"
         return (
             "Anruf" if res.telefon else "Kontakt suchen",
-            f"Keine Website unter der Domain - der klarste Anlass ueberhaupt, {weg}.",
+            f"Keine Website unter der Domain - der klarste Anlass ueberhaupt, {weg}. "
+            "Vorher kurz pruefen, ob der Betrieb noch existiert: eine Platzhalterseite "
+            "kann auch bedeuten, dass er aufgegeben hat.",
         )
 
     if res.score < SCHWELLE_LOHNT:
@@ -484,6 +567,18 @@ PARKSEITE_TEXT = (
     "hier entsteht eine neue",
     "hier entsteht die neue",
     "diese seite befindet sich im aufbau",
+    # Platzhalter, wie sie Baukasten- und Hosting-Anbieter ausliefern
+    "site in the making",
+    "check back soon",
+    "coming to this web address",
+    "website im aufbau",
+    "webseite im aufbau",
+    "seite im aufbau",
+    "bald online",
+    "in kürze online",
+    "in kuerze online",
+    "demnächst online",
+    "demnaechst online",
     "platzhalterseite",
     "default web page",
     "welcome to nginx",
@@ -515,8 +610,15 @@ def ist_parkseite(ctx: Context) -> str | None:
     klein = text.lower()
     kurz = len(text) < 1200  # echte Firmenseiten sind laenger
 
+    # Auch der Seitentitel zaehlt. Viele Platzhalter nennen ihr Stichwort nur dort
+    # ("Under construction - Awesome site in the making!"), im sichtbaren Text
+    # steht es dann in anderer Schreibweise oder gar nicht.
+    titel = ctx.tree.css_first("title")
+    titel_klein = titel.text(strip=True).lower() if titel else ""
+    heu = klein + " " + titel_klein
+
     for marker in PARKSEITE_TEXT:
-        if marker in klein and kurz:
+        if marker in heu and kurz:
             return "Platzhalterseite"
 
     ziel_host = (urlparse(ctx.fetched.final_url).hostname or "").lower()
@@ -835,6 +937,71 @@ BAUKASTEN = [
 ]
 
 
+# Aktuelle Hauptversion des Plugins "Slider Revolution". Stand Dezember 2025:
+# Plugin 6.7.40 (sliderrevolution.com/changelog). Die "SR7 Velocity Engine"
+# steckt innerhalb der 6.7er-Reihe, die Plugin-Nummer blieb bei 6 - 6.x ist
+# also die gepflegte Reihe, nicht etwa veraltet. Hebt Themepunch die
+# Hauptnummer auf 7, hier anpassen.
+SLIDERREV_AKTUELLE_HAUPT = 6
+
+_SR_VERSION_IM_TEXT = re.compile(r"slider\s+revolution\s+v?(\d+(?:\.\d+)+)", re.IGNORECASE)
+_SR_VERSION_IM_KOMMENTAR = re.compile(r"revolution\s+slider\s+v?(\d+(?:\.\d+)+)", re.IGNORECASE)
+# Versionsparameter an Dateien des Plugins, z. B. rs6.min.js?ver=6.7.38. Nur
+# Adressen, in denen das Plugin vorkommt - ein ?ver= an jquery.js ist die
+# WordPress-Version, nicht die des Sliders.
+_SR_VERSION_IM_ASSET = re.compile(
+    r"(?:revslider|rs-plugin|revolution)[^\"'\s<>]*?[?&](?:ver|v|rev)=(\d+(?:\.\d+)+)", re.IGNORECASE
+)
+# Die Hauptnummer steckt oft schon im Dateipfad: .../revslider/sr6/... oder rs6.min.js
+_SR_HAUPT_IM_PFAD = re.compile(r"revslider[^\"'\s<>]*?/(?:sr|rs)(\d)(?:/|\.)", re.IGNORECASE)
+
+
+@dataclass(frozen=True)
+class SliderRevVersion:
+    text: str  # "6.7.38" oder "5.x oder aelter"
+    haupt: int
+    quelle: str  # Generator-Meta | Asset-Parameter | Kommentar | Dateipfad
+
+
+def slider_revolution_version(tree: LexborHTMLParser, html: str) -> SliderRevVersion | None:
+    """Version von Slider Revolution, soweit die Seite sie preisgibt.
+
+    Nur ein Versionsnachweis taugt als Grundlage fuer ein Sicherheits-
+    argument. Das blosse Vorhandensein des Plugins sagt nichts: die
+    gepflegte 6.x-Reihe ist so unauffaellig wie jedes andere Plugin.
+    Rueckgabe None, wenn keine Version ermittelbar ist.
+    """
+
+    def bauen(version: str, quelle: str) -> SliderRevVersion:
+        return SliderRevVersion(version, int(version.split(".")[0]), quelle)
+
+    # 1. Generator-Meta - Seiten haben oft mehrere, der Slider ist selten der erste
+    for node in tree.css("meta"):
+        if (node.attributes.get("name") or "").strip().lower() == "generator":
+            m = _SR_VERSION_IM_TEXT.search(node.attributes.get("content") or "")
+            if m:
+                return bauen(m.group(1), "Generator-Meta")
+
+    # 2. Versionsparameter an Plugin-Dateien
+    m = _SR_VERSION_IM_ASSET.search(html)
+    if m:
+        return bauen(m.group(1), "Asset-Parameter")
+
+    # 3. Kommentar im Quelltext, z. B. "START REVOLUTION SLIDER 5.4.8"
+    m = _SR_VERSION_IM_KOMMENTAR.search(html)
+    if m:
+        return bauen(m.group(1), "Kommentar")
+
+    # 4. Nur die Hauptnummer aus dem Dateipfad (sr6/, rs6.min.js)
+    m = _SR_HAUPT_IM_PFAD.search(html)
+    if m:
+        return SliderRevVersion(f"{m.group(1)}.x", int(m.group(1)), "Dateipfad")
+    # Der Ordner rs-plugin gehoert zu den Reihen 4 und 5
+    if re.search(r"revslider/rs-plugin/", html, re.IGNORECASE):
+        return SliderRevVersion("5.x oder aelter", 5, "Dateipfad")
+    return None
+
+
 def detect_stack(ctx: Context) -> tuple[list[tuple[str, float, str | None]], str]:
     """Erkannte Technik zurueckgeben plus kurzen CMS-Namen fuer die Tabelle."""
     if ctx.tree is None:
@@ -909,13 +1076,23 @@ def detect_stack(ctx: Context) -> tuple[list[tuple[str, float, str | None]], str
         hits.append(("TYPO3", 0.3, None))
 
     if has("revslider", "rs-plugin", "slider revolution"):
-        hits.append(
-            (
-                "Slider Revolution",
-                0.5,
-                "Das Slider-Revolution-Plugin ist eingebunden - in alten Versionen eine bekannte Sicherheitsluecke.",
+        sr = slider_revolution_version(ctx.tree, html)
+        if sr is None:
+            # Reiner Fingerabdruck: bleibt als Befund stehen, begruendet aber
+            # kein Sicherheitsargument - ohne Version waere das geraten.
+            hits.append(("Slider Revolution (Version nicht ermittelbar)", 0.15, None))
+        elif sr.haupt < SLIDERREV_AKTUELLE_HAUPT:
+            hits.append(
+                (
+                    f"Slider Revolution {sr.text} (veraltet, aktuell ist die Reihe {SLIDERREV_AKTUELLE_HAUPT}.x)",
+                    0.7,
+                    f"Das Slider-Revolution-Plugin laeuft in Version {sr.text}, aktuell ist die Reihe "
+                    f"{SLIDERREV_AKTUELLE_HAUPT}.x - aeltere Versionen haben bekannte Sicherheitsluecken, "
+                    "das sollte geprueft werden.",
+                )
             )
-        )
+        else:
+            hits.append((f"Slider Revolution {sr.text}", 0.1, None))
 
     # Technik aus der Flash-Aera
     if has(".swf", "application/x-shockwave-flash"):
@@ -970,7 +1147,13 @@ def check_technologie(ctx: Context) -> CheckResult:
     if ctx.tree is None:
         return CheckResult("technologie", None)
     hits, _ = detect_stack(ctx)
-    findings = [Finding(name, arg) for name, _sev, arg in hits if _sev >= 0.3 or arg]
+    # Der Slider-Fingerabdruck steht immer als Befund da, auch wenn er kaum
+    # ins Gewicht faellt - er soll sichtbar bleiben, ohne zu alarmieren.
+    findings = [
+        Finding(name, arg)
+        for name, _sev, arg in hits
+        if _sev >= 0.3 or arg or name.startswith("Slider Revolution")
+    ]
     return CheckResult("technologie", combine([s for _n, s, _a in hits]), findings)
 
 
@@ -1227,7 +1410,7 @@ def check_bilder(ctx: Context) -> CheckResult:
             )
         )
 
-    if a.images_measured >= 3:
+    if a.images_measured >= MIN_INHALTSBILDER:
         ratio = a.images_small / a.images_measured
         if ratio > 0.5:
             signals.append(0.5)
@@ -1448,20 +1631,27 @@ class HostLimiter:
 
 
 class Fetcher:
-    def __init__(self, timeout: float, limiter: HostLimiter) -> None:
+    def __init__(self, timeout: float, limiter: HostLimiter, parallel: int = MAX_PARALLEL) -> None:
         headers = {
             "User-Agent": USER_AGENT,
             "Accept": "text/html,application/xhtml+xml,*/*;q=0.8",
             "Accept-Language": "de-DE,de;q=0.9",
         }
-        limits = httpx.Limits(max_connections=MAX_PARALLEL * 3, max_keepalive_connections=10)
+        # Das Verbindungslimit muss mit der Parallelitaet mitwachsen. Ist der Pool
+        # zu klein, laufen Abrufe in einen Pool-Timeout - der als "nicht erreichbar"
+        # gemeldet wuerde, obwohl die Seite in Ordnung ist.
+        limits = httpx.Limits(max_connections=parallel * 3 + 10, max_keepalive_connections=parallel)
+        zeitlimit = httpx.Timeout(timeout, connect=min(timeout, CONNECT_TIMEOUT), pool=max(timeout, 60.0))
         self.secure = httpx.AsyncClient(
-            headers=headers, timeout=timeout, follow_redirects=True, limits=limits, verify=True
+            headers=headers, timeout=zeitlimit, follow_redirects=True, limits=limits, verify=True
         )
         self.insecure = httpx.AsyncClient(
-            headers=headers, timeout=timeout, follow_redirects=True, limits=limits, verify=False
+            headers=headers, timeout=zeitlimit, follow_redirects=True, limits=limits, verify=False
         )
         self.limiter = limiter
+        # Hosts, die es nicht gibt. Wer beim robots.txt-Abruf scheitert, spart sich
+        # beim Seitenabruf die Wiederholungen, den http-Versuch und die Wartezeit.
+        self._tot: dict[str, str] = {}
         self._robots: dict[str, RobotFileParser | None] = {}
         self._robots_locks: dict[str, asyncio.Lock] = {}
 
@@ -1488,11 +1678,19 @@ class Fetcher:
         try:
             await self.limiter.wait(host)
             resp = await self.secure.get(base + "/robots.txt")
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            fehler = describe_error(exc)
+            if ist_dauerhaft_tot(fehler):
+                self._tot[host] = fehler
+                return None
+            # Der unsichere Zweitversuch hilft nur bei einem Zertifikatsproblem. Bei
+            # Timeout oder Verbindungsfehler verdoppelte er nur die Wartezeit.
+            if not ssl_reason(exc):
+                return None
             try:
                 await self.limiter.wait(host)
                 resp = await self.insecure.get(base + "/robots.txt")
-            except Exception:
+            except Exception:  # noqa: BLE001
                 return None
         # 4xx/5xx werten wir als "keine Regeln" - sonst fallen Leads
         # wegen einer kaputten robots.txt grundlos aus der Liste.
@@ -1509,8 +1707,12 @@ class Fetcher:
         last_error = ""
         for idx, url in enumerate(candidates):
             host = host_of(url)
+            if host in self._tot:  # beim robots.txt-Abruf schon als nicht existent erkannt
+                last_error = self._tot[host]
+                continue
             tls_problem = None
             resp = None
+            host_tot = False
             started = time.monotonic()
             # Erst mehrfach versuchen, bevor wir eine Seite aufgeben oder auf
             # http zurueckfallen. Ein einzelner Netzaussetzer darf eine Seite
@@ -1534,9 +1736,18 @@ class Fetcher:
                         break
                     last_error = describe_error(exc)
                     resp = None
+                    if ist_dauerhaft_tot(last_error):
+                        # Die Adresse gibt es nicht: weder Wiederholen noch http helfen.
+                        self._tot[host] = last_error
+                        host_tot = True
+                        break
+                    if isinstance(exc, httpx.TimeoutException) and attempt + 1 >= TIMEOUT_VERSUCHE:
+                        break
                     if attempt < RETRIES - 1:
                         await asyncio.sleep(RETRY_BACKOFF * (attempt + 1))
             if resp is None:
+                if host_tot:
+                    break  # derselbe Host unter http:// ist genauso tot
                 continue
 
             elapsed = time.monotonic() - started
@@ -1586,6 +1797,19 @@ class Fetcher:
             except Exception:  # noqa: BLE001
                 return None
         return None
+
+    async def status_und_text(self, url: str) -> tuple[int | None, str]:
+        """Statuscode und HTML einer Unterseite in einem Abruf.
+
+        Ersetzt head_status() gefolgt von text_of() - zwei Abrufe an denselben
+        Host, also zwei Sekunden Takt statt einer.
+        """
+        try:
+            await self.limiter.wait(host_of(url))
+            resp = await self.secure.get(url)
+            return resp.status_code, (resp.text if resp.status_code < 400 else "")
+        except Exception:  # noqa: BLE001 - eine Unterseite darf nie den Lauf kippen
+            return None, ""
 
     async def text_of(self, url: str) -> str:
         """HTML einer Unterseite holen. Leerer String, wenn es nicht klappt."""
@@ -1669,9 +1893,187 @@ def describe_error(exc: BaseException) -> str:
     return f"{type(exc).__name__}: {str(exc)[:70]}"
 
 
+# Bilder, die nichts ueber die Bildqualitaet der Seite sagen: Platzhalter, die
+# ein Lazy-Load-Skript spaeter durch das echte Bild ersetzt.
+PLATZHALTER_MARKER = (
+    "a3-lazy-load", "lazy_placeholder", "lazy-placeholder", "placeholder",
+    "dummy.png", "dummy.gif", "blank.gif", "blank.png", "spacer", "transparent.",
+    "1x1", "pixel.gif", "loading.gif", "loader.gif", "grey.gif", "lazy.gif",
+)
+
+# Kein Inhaltsbild, wenn Klasse, Id, Alt-Text, Titel oder Dateiname eines davon enthaelt.
+BILD_KEIN_INHALT = (
+    "logo", "icon", "favicon", "sprite", "pixel", "tracking", "counter", "beacon",
+    "spacer", "emoji", "smiley", "avatar", "badge", "rating", "bewertung", "siegel",
+    "payment", "captcha", "arrow", "bullet", "button",
+)
+
+# Bereiche, in denen keine Inhaltsbilder stehen: Kopf, Navigation, Fuss, Seitenleiste.
+KOPF_FUSS_TAGS = frozenset({"header", "nav", "footer", "aside", "noscript"})
+KOPF_FUSS_ROLLEN = frozenset({"banner", "navigation", "contentinfo", "complementary"})
+KOPF_FUSS_WORTE = ("masthead", "navbar", "site-header", "site-footer", "main-nav", "topbar", "breadcrumb")
+
+ICON_MAX_KANTE = 64  # bis hierhin gilt ein Bild als Icon
+PIXEL_MAX_KANTE = 3  # darunter ist es ein Zaehl- oder Platzhalterpixel
+MIN_INHALTSBILDER = 3  # erst ab so vielen Inhaltsbildern ist eine Anteilsaussage belastbar
+
+
+@dataclass
+class BildRef:
+    url: str
+    inhalt: bool  # Inhaltsbild, nicht Logo/Icon/Zaehlpixel
+    breite: int | None = None  # aus dem srcset-Deskriptor, falls vorhanden
+
+
+def ist_platzhalter(url: str) -> bool:
+    """Ersatzbild eines Lazy-Load-Skripts (data:-URI, 1x1-GIF, Dummy-Datei)."""
+    if not url:
+        return True
+    klein = url.strip().lower()
+    if klein.startswith(("data:", "about:", "javascript:")):
+        return True
+    return any(marker in klein for marker in PLATZHALTER_MARKER)
+
+
+def srcset_kandidaten(srcset: str) -> list[tuple[str, int | None, float]]:
+    """srcset zerlegen: (Adresse, Breite aus "600w" oder None, Dichte aus "2x")."""
+    ergebnis: list[tuple[str, int | None, float]] = []
+    for teil in re.split(r"\s*,\s+", (srcset or "").strip()):
+        stuecke = teil.split()
+        if not stuecke:
+            continue
+        # Uebrig gebliebene Kommas ("a.jpg 1x,") gehoeren nicht zur Adresse; ein
+        # Eintrag ohne Zeichen davon ist Muell und kein Bild.
+        stuecke[0] = stuecke[0].strip(",")
+        if not stuecke[0]:
+            continue
+        breite: int | None = None
+        dichte = 1.0
+        if len(stuecke) > 1:
+            deskriptor = stuecke[1].lower()
+            if deskriptor.endswith("w") and deskriptor[:-1].isdigit():
+                breite = int(deskriptor[:-1])
+            elif deskriptor.endswith("x"):
+                try:
+                    dichte = float(deskriptor[:-1])
+                except ValueError:
+                    pass
+        ergebnis.append((stuecke[0], breite, dichte))
+    return ergebnis
+
+
+def bildquelle(node) -> tuple[str, int | None]:
+    """Adresse des echten Bildes und - falls bekannt - seine Breite.
+
+    Reihenfolge: das groesste Element aus (data-)srcset, dann data-src,
+    data-lazy-src, data-original, data-lazyload, zuletzt src. Platzhalter
+    werden uebersprungen; bleibt nur einer uebrig, gibt es kein Bild.
+    """
+    a = node.attributes
+    kandidaten: list[tuple[str, int | None, float]] = []
+    for schluessel in ("data-srcset", "data-lazy-srcset", "srcset"):
+        kandidaten += srcset_kandidaten(a.get(schluessel) or "")
+    brauchbar = [k for k in kandidaten if not ist_platzhalter(k[0])]
+    if brauchbar:
+        url, breite, _dichte = max(brauchbar, key=lambda k: (k[1] or 0, k[2]))
+        return url, breite
+    for schluessel in ("data-src", "data-lazy-src", "data-original", "data-lazyload", "src"):
+        wert = (a.get(schluessel) or "").strip()
+        if wert and not ist_platzhalter(wert):
+            return wert, None
+    return "", None
+
+
+def _kante(wert: str | None) -> int | None:
+    m = re.match(r"^\s*(\d+)\s*(?:px)?\s*$", wert or "")
+    return int(m.group(1)) if m else None
+
+
+def ist_inhaltsbild(node, url: str) -> bool:
+    """Foto oder Grafik im sichtbaren Inhalt - kein Logo, Icon oder Zaehlpixel."""
+    pfad = url.lower().split("?")[0]
+    if pfad.endswith(".svg"):
+        return False  # Vektorgrafik, die Pixelbreite sagt nichts
+    a = node.attributes
+    eigene = " ".join(
+        [a.get("class") or "", a.get("id") or "", a.get("alt") or "", a.get("title") or "", pfad.rsplit("/", 1)[-1]]
+    ).lower()
+    if any(wort in eigene for wort in BILD_KEIN_INHALT):
+        return False
+
+    kanten = [k for k in (_kante(a.get("width")), _kante(a.get("height"))) if k]
+    if kanten and max(kanten) <= ICON_MAX_KANTE:
+        return False
+
+    oben = node.parent
+    for _ in range(15):
+        if oben is None:
+            break
+        if oben.tag in KOPF_FUSS_TAGS:
+            return False
+        if (oben.attributes.get("role") or "").lower() in KOPF_FUSS_ROLLEN:
+            return False
+        kennung = ((oben.attributes.get("class") or "") + " " + (oben.attributes.get("id") or "")).lower()
+        if any(wort in kennung for wort in KOPF_FUSS_WORTE):
+            return False
+        oben = oben.parent
+    return True
+
+
+def bild_refs(tree: LexborHTMLParser, base: str) -> list[BildRef]:
+    """Alle echten Bilder der Seite, Platzhalter bereits aussortiert."""
+    refs: dict[str, BildRef] = {}
+    for node in tree.css("img"):
+        roh, breite = bildquelle(node)
+        if not roh:
+            continue
+        voll = urljoin(base, roh.strip())
+        if not voll.lower().startswith(("http://", "https://")):
+            continue
+        inhalt = ist_inhaltsbild(node, voll)
+        if voll in refs:
+            # Dasselbe Bild an anderer Stelle: zaehlt, sobald es irgendwo Inhalt ist
+            refs[voll].inhalt = refs[voll].inhalt or inhalt
+            refs[voll].breite = refs[voll].breite or breite
+            continue
+        refs[voll] = BildRef(voll, inhalt, breite)
+    return list(refs.values())
+
+
+def zaehle_inhaltsbilder(
+    refs: list[BildRef], masse: dict[str, tuple[int, int] | None]
+) -> tuple[int, int]:
+    """(bewertete Inhaltsbilder, davon schmaler als SMALL_IMAGE_PX).
+
+    Die Breite kommt aus dem srcset-Deskriptor, sonst aus dem Dateikopf des
+    vermessenen Bildes. Bilder ohne bekannte Breite und Zaehlpixel zaehlen
+    nicht - lieber weniger Bilder bewerten als falsche.
+    """
+    gemessen = klein = 0
+    for ref in refs:
+        if not ref.inhalt:
+            continue
+        dims = masse.get(ref.url)
+        if dims and max(dims) <= PIXEL_MAX_KANTE:
+            continue
+        breite = ref.breite or (dims[0] if dims else None)
+        if not breite:
+            continue
+        gemessen += 1
+        if breite < SMALL_IMAGE_PX:
+            klein += 1
+    return gemessen, klein
+
+
 def collect_asset_urls(tree: LexborHTMLParser, base: str, limit: int) -> tuple[list[str], list[str], int]:
-    """Bilder zuerst, danach CSS/JS. Rueckgabe: (bilder, sonstige, gesamt_refs)."""
-    images: list[str] = []
+    """Bilder zuerst (Inhaltsbilder vor Logos), danach CSS/JS.
+
+    Rueckgabe: (bilder, sonstige, gesamt_refs). Platzhalter und data:-URIs
+    sind nicht dabei.
+    """
+    refs = bild_refs(tree, base)
+    refs.sort(key=lambda r: not r.inhalt)  # stabil: Inhaltsbilder zuerst
+    images = [r.url for r in refs]
     others: list[str] = []
     seen: set[str] = set()
 
@@ -1687,14 +2089,6 @@ def collect_asset_urls(tree: LexborHTMLParser, base: str, limit: int) -> tuple[l
         seen.add(full)
         target.append(full)
 
-    for node in tree.css("img"):
-        attrs = node.attributes
-        src = attrs.get("src") or attrs.get("data-src") or ""
-        if not src:
-            srcset = attrs.get("srcset") or ""
-            if srcset:
-                src = srcset.split(",")[0].strip().split(" ")[0]
-        add(images, src)
     for node in tree.css("script[src]"):
         add(others, node.attributes.get("src") or "")
     for node in tree.css("link[rel]"):
@@ -1727,14 +2121,29 @@ def declared_width(node) -> int | None:
 # ---------------------------------------------------------------------------
 
 
+def unbewertet(
+    lead: Lead, final_url: str, status: str, grund: str, befund: str, now: str
+) -> Result:
+    """Ergebnis ohne Chaos-Score: Seite nicht erreichbar oder Pruefung gescheitert.
+
+    Ohne Score und ohne Verkaufsargumente - die Befunde einer Seite, die sich
+    nicht oeffnen laesst, waeren geraten.
+    """
+    res = Result(
+        name=lead.name, url=lead.url, ort=lead.ort, branche=lead.branche,
+        final_url=final_url, status=status, score=None, cms="", argumente=[],
+        befunde=[befund], severities={}, geprueft_am=now,
+        telefon=lead.telefon, email=lead.email, unerreichbar_grund=grund,
+    )
+    res.empfehlung, res.empfehlung_grund = naechster_schritt(res)
+    return res
+
+
 async def audit_lead(lead: Lead, fetcher: Fetcher, args: argparse.Namespace, psi_key: str | None) -> Result:
     now = datetime.now().isoformat(timespec="seconds")
     candidates = normalize_url(lead.url)
     if not candidates:
-        return Result(
-            lead.name, lead.url, lead.ort, lead.branche, "", "fehler", 100.0, "",
-            ["Es ist keine URL hinterlegt."], ["Keine URL in der CSV"], {}, now,
-        )
+        return unbewertet(lead, "", STATUS_PRUEFFEHLER, "", "[Pruefung] Keine URL in der CSV", now)
 
     # robots.txt zuerst - gesperrte Seiten fassen wir nicht an.
     try:
@@ -1742,16 +2151,28 @@ async def audit_lead(lead: Lead, fetcher: Fetcher, args: argparse.Namespace, psi
     except Exception:  # noqa: BLE001
         allowed = True
     if not allowed:
-        gesperrt = Result(
-            lead.name, lead.url, lead.ort, lead.branche, candidates[0], "gesperrt", 0.0, "",
-            ["Automatische Pruefung per robots.txt untersagt - Seite manuell ansehen."],
-            ["Durch robots.txt fuer automatisierte Pruefung gesperrt, nicht bewertet"],
-            {}, now, telefon=lead.telefon, email=lead.email,
+        return unbewertet(
+            lead, candidates[0], STATUS_UNERREICHBAR, "robots",
+            "[Erreichbarkeit] Durch robots.txt fuer automatisierte Pruefung gesperrt, nicht bewertet", now,
         )
-        gesperrt.empfehlung, gesperrt.empfehlung_grund = naechster_schritt(gesperrt)
-        return gesperrt
 
     fetched = await fetcher.get_page(candidates)
+
+    # Seite nicht erreichbar: kein Score. Ein Timeout, ein DNS-Fehler oder ein
+    # 5xx besagt nichts ueber die Qualitaet der Seite - und in den
+    # Quelldaten stecken viele Tippfehler und tote Adressen, die sonst
+    # mit Score 100 ganz oben landeten.
+    if fetched.error:
+        grund = grund_aus_text(fetched.error)
+        return unbewertet(
+            lead, fetched.final_url or candidates[0], STATUS_UNERREICHBAR, grund,
+            f"[Erreichbarkeit] Seite nicht erreichbar: {fetched.error}", now,
+        )
+    if fetched.status is not None and fetched.status >= 500:
+        return unbewertet(
+            lead, fetched.final_url or candidates[0], STATUS_UNERREICHBAR, "http5xx",
+            f"[Erreichbarkeit] Server antwortet mit HTTP {fetched.status}", now,
+        )
     tree = None
     if not fetched.error and fetched.html:
         try:
@@ -1768,8 +2189,7 @@ async def audit_lead(lead: Lead, fetcher: Fetcher, args: argparse.Namespace, psi
         imp, dat = find_legal_links(tree, base)
         legal = LegalInfo(impressum_url=imp, datenschutz_url=dat)
         if imp:
-            legal.impressum_status = await fetcher.head_status(imp)
-            legal.impressum_html = await fetcher.text_of(imp)
+            legal.impressum_status, legal.impressum_html = await fetcher.status_und_text(imp)
         if dat and dat != imp:
             legal.datenschutz_status = await fetcher.head_status(dat)
         elif dat:
@@ -1778,23 +2198,30 @@ async def audit_lead(lead: Lead, fetcher: Fetcher, args: argparse.Namespace, psi
 
         # Assets vermessen
         if args.assets > 0:
+            refs = bild_refs(tree, base)
             images, others, total_refs = collect_asset_urls(tree, base, args.assets)
             info = AssetInfo(refs=total_refs)
-            for url in images + others:
-                got = await fetcher.measure_asset(url)
+            masse: dict[str, tuple[int, int] | None] = {}
+            # Alle Abrufe gleichzeitig anstossen: der Takt pro Host bleibt (der
+            # HostLimiter reiht Abrufe an denselben Host im Sekundenabstand ein),
+            # Dateien von verschiedenen Hosts - Seite, CDN - warten aber nicht
+            # mehr aufeinander.
+            alle = images + others
+            abgerufen = await asyncio.gather(*(fetcher.measure_asset(u) for u in alle))
+            for url, got in zip(alle, abgerufen):
                 if got is None:
                     continue
                 size, head = got
                 info.measured += 1
                 info.total_bytes += size
-                is_image = url in images
-                if is_image:
-                    info.images_measured += 1
-                    dims = image_dimensions(head)
-                    if dims and dims[0] < SMALL_IMAGE_PX:
-                        info.images_small += 1
+                if url in images:
+                    masse[url] = image_dimensions(head)
                     if size > HUGE_IMAGE_BYTES:
                         info.oversized.append((url, size))
+            # Die Anteilsaussage zaehlt nur Inhaltsbilder - auch solche, die
+            # wegen des Abruflimits nicht vermessen wurden, sofern ihre Breite
+            # aus dem srcset bekannt ist.
+            info.images_measured, info.images_small = zaehle_inhaltsbilder(refs, masse)
             ctx.assets = info
 
         # PageSpeed Insights
@@ -1824,8 +2251,8 @@ async def audit_lead(lead: Lead, fetcher: Fetcher, args: argparse.Namespace, psi
         for f in r.findings:
             befunde.append(f"[{LABELS.get(r.key, r.key)}] {f.text}")
 
-    status = "fehler" if fetched.error else "ok"
-    if not arguments and status == "ok":
+    status = STATUS_OK
+    if not arguments and status == STATUS_OK:
         arguments = ["Keine groben Maengel gefunden - hier lohnt eher ein Gespraech ueber Inhalte als ueber Technik."]
 
     telefon = email = ""
@@ -2134,7 +2561,7 @@ def write_csv(results: list[Result], path: Path, status: dict[str, LeadStatus] |
             st = status.get(Statusbuch.key(r.url), LeadStatus(url_key=""))
             writer.writerow(
                 [
-                    f"{r.score:.1f}", r.empfehlung, r.name, r.telefon, r.email,
+                    "" if r.score is None else f"{r.score:.1f}", r.empfehlung, r.name, r.telefon, r.email,
                     r.ort, r.branche, r.url, r.final_url,
                     r.status, r.cms, "" if r.pagespeed is None else r.pagespeed,
                     st.status, st.wiedervorlage, st.notiz, r.empfehlung_grund,
@@ -2184,12 +2611,11 @@ def print_table(results: list[Result]) -> None:
     table.add_column("Wichtigster Befund", max_width=52)
 
     for r in results:
-        color = "red" if r.score >= 60 else "yellow" if r.score >= 35 else "green"
-        if r.status == "gesperrt":
-            color = "dim"
+        color = "dim" if r.score is None else "red" if r.score >= 60 else "yellow" if r.score >= 35 else "green"
         first = r.argumente[0] if r.argumente else (r.befunde[0] if r.befunde else "")
         table.add_row(
-            f"[{color}]{r.score:.0f}[/{color}]", r.name, r.ort, r.cms or "-", r.status, first
+            f"[{color}]{'-' if r.score is None else format(r.score, '.0f')}[/{color}]",
+            r.name, r.ort, r.cms or "-", r.status, first
         )
     console.print(table)
 
@@ -2214,6 +2640,15 @@ def load_env_file(path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
+def anzeige_score(score: float | None) -> str:
+    return "    -" if score is None else f"{score:5.1f}"
+
+
+def sortierschluessel(r: Result) -> tuple[bool, float, str]:
+    """Schlechteste zuerst, nicht bewertete Seiten ans Ende."""
+    return (r.score is None, -(r.score or 0.0), r.name.lower())
+
+
 async def run(
     leads: list[Lead],
     args: argparse.Namespace,
@@ -2231,7 +2666,7 @@ async def run(
     kontrolliert ab und gibt zurueck, was bis dahin fertig war.
     """
     limiter = HostLimiter(args.host_interval)
-    fetcher = Fetcher(args.timeout, limiter)
+    fetcher = Fetcher(args.timeout, limiter, args.concurrency)
     sem = asyncio.Semaphore(args.concurrency)
     results: list[Result] = []
     gesamt = len(leads)
@@ -2254,11 +2689,12 @@ async def run(
         results.append(res)
         if progress is not None:
             if aus_cache:
-                progress.console.log(f"[dim]cache[/dim]  {res.score:5.1f}  {res.name}")
+                progress.console.log(f"[dim]cache[/dim]  {anzeige_score(res.score)}  {res.name}")
             else:
-                farbe = "red" if res.score >= 60 else "yellow" if res.score >= 35 else "green"
+                farbe = ("dim" if res.score is None else "red" if res.score >= 60
+                         else "yellow" if res.score >= 35 else "green")
                 progress.console.log(
-                    f"[{farbe}]{res.score:5.1f}[/{farbe}]  {res.name}  [dim]{res.cms or res.status}[/dim]"
+                    f"[{farbe}]{anzeige_score(res.score)}[/{farbe}]  {res.name}  [dim]{res.cms or res.status}[/dim]"
                 )
             progress.advance(task)
         else:
@@ -2278,11 +2714,10 @@ async def run(
             try:
                 res = await audit_lead(lead, fetcher, args, psi_key)
             except Exception as exc:  # noqa: BLE001 - nie den ganzen Lauf kippen
-                res = Result(
-                    lead.name, lead.url, lead.ort, lead.branche, "", "fehler", 100.0, "",
-                    ["Die Pruefung ist abgebrochen, Seite manuell ansehen."],
-                    [f"[Pruefung] Interner Fehler: {type(exc).__name__}: {exc}"],
-                    {}, datetime.now().isoformat(timespec="seconds"),
+                res = unbewertet(
+                    lead, "", STATUS_PRUEFFEHLER, "",
+                    f"[Pruefung] Interner Fehler: {type(exc).__name__}: {exc}",
+                    datetime.now().isoformat(timespec="seconds"),
                 )
         if cache is not None:
             cache.put(res, args.pagespeed)
@@ -2295,7 +2730,7 @@ async def run(
             progress.stop()
         await fetcher.aclose()
 
-    results.sort(key=lambda r: (-r.score, r.name.lower()))
+    results.sort(key=sortierschluessel)
     return results
 
 
@@ -2311,7 +2746,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cache", type=Path, default=Path(".site-audit-cache.sqlite"), help="Pfad der Cache-Datenbank")
     p.add_argument("--no-cache", action="store_true", help="Cache gar nicht benutzen")
     p.add_argument("--max-age", type=int, default=0, help="Cache-Eintraege aelter als N Tage neu pruefen (0 = nie)")
-    p.add_argument("--concurrency", type=int, default=MAX_PARALLEL, help="Wie viele Seiten gleichzeitig")
+    p.add_argument(
+        "--concurrency", type=int, default=MAX_PARALLEL,
+        help=f"Wie viele Seiten gleichzeitig (Vorgabe {MAX_PARALLEL}); der Takt pro Host bleibt bei 1 Request/s",
+    )
     p.add_argument("--host-interval", type=float, default=HOST_INTERVAL, help="Sekunden zwischen Requests pro Host")
     p.add_argument("--assets", type=int, default=DEFAULT_ASSETS, help="Wie viele Bilder/CSS/JS pro Seite vermessen (0 = aus)")
     p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="Timeout pro Request in Sekunden")

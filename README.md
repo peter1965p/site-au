@@ -72,15 +72,79 @@ Schreibt `ergebnis.csv` (nach Score absteigend) und `ergebnis.html`
 | `--cache PFAD` | `.site-audit-cache.sqlite` | Ort der Cache-Datenbank |
 | `--no-cache` | aus | Gar nicht cachen |
 | `--max-age N` | `0` | Cache-Einträge älter als N Tage neu prüfen (`0` = nie) |
-| `--concurrency N` | `10` | Wie viele Seiten gleichzeitig |
+| `--concurrency N` | `30` | Wie viele Firmen gleichzeitig geprüft werden |
 | `--host-interval S` | `1.0` | Mindestabstand zwischen Requests an denselben Host |
-| `--assets N` | `15` | Wie viele Bilder/CSS/JS pro Seite vermessen werden (`0` = aus) |
+| `--assets N` | `6` | Wie viele Bilder/CSS/JS pro Seite vermessen werden, Inhaltsbilder zuerst (`0` = aus) |
 | `--timeout S` | `20` | Timeout pro Request |
 
-`--assets` bestimmt die Laufzeit stärker als alles andere, weil jedes Asset
-dem Rate-Limit von einem Request pro Sekunde und Host unterliegt. Für große
-Listen lohnt `--assets 5`; dann entfällt die Aussage zum Seitengewicht
-weitgehend, der Rest bleibt vollständig.
+### Tempo
+
+Eine Firma braucht rund 9 s, fast alles davon ist Warten auf den Takt von
+1 Request pro Sekunde und Host. Der Durchsatz ist deshalb *Parallelität geteilt
+durch Dauer pro Firma*. Gemessen an 240 zufälligen Firmen aus einer echten
+Liste: **184 Firmen pro Minute** statt 35 mit den früheren Vorgaben (10 parallel,
+15 Stichproben, doppelte Abrufe, volle Wartezeit bei toten Adressen).
+
+Was das Tempo bringt, ohne die Höflichkeit zu lockern:
+
+- **`--concurrency 30`.** Jede Firma liegt auf einem anderen Host, mehr
+  parallele Firmen belasten also keine einzelne Seite stärker. Der Takt pro
+  Host gilt unverändert. In der GUI steht die Zahl unten rechts („Parallel").
+- **`--assets 6` statt 15.** Jede Datei kostet eine Sekunde Takt. Die Dateien
+  werden jetzt gleichzeitig angestoßen, Dateien auf verschiedenen Hosts
+  warten nicht mehr aufeinander. Preis: Das Seitengewicht ist eine
+  Untergrenze aus weniger Dateien; an 33 Testseiten blieben 23 Scores
+  unverändert, die mittlere Abweichung lag bei 0,8 Punkten (meist −2,5 durch
+  ein entfallenes Gewichts-Finding). Für eine genauere zweite Runde über die
+  besten Kandidaten: `--assets 15`.
+- **Tote Adressen sofort abhaken.** „Name or service not known" wird nicht
+  wiederholt, der http-Ausweichversuch entfällt, und schon der robots.txt-
+  Abruf merkt sich den Host. Timeouts werden einmal wiederholt, der
+  Verbindungsaufbau gibt nach 8 s auf. Vorher hielt eine tote Seite einen
+  Platz bis zu 170 s.
+- **Impressum mit einem Abruf** statt HEAD plus GET.
+
+Bei sehr hoher Parallelität (> 60) lohnt ein Blick auf die eigene Leitung. Wer
+die frühere Vorsicht will: `--concurrency 10`.
+
+## Firmen finden
+
+Das Tool bewertet nicht nur eine fertige Liste, es findet auch Firmen. Quelle ist
+OpenStreetMap (Overpass-API, ODbL). Es werden nur Betriebe geliefert, bei denen
+eine Website hinterlegt ist, denn ohne Website gibt es nichts zu prüfen.
+
+In der Oberfläche: **Firmen suchen …** → Bundesland, optional Kreis oder
+kreisfreie Stadt, Branchen wählen. Die Treffer werden an die offene Liste
+**angehängt** (so lassen sich mehrere Kreise zusammentragen) und als
+`leads.csv` gesichert. Auf der Kommandozeile:
+
+```bash
+./venv/bin/python finden.py --region vulkaneifel --branchen handwerk,gastronomie --out leads.csv
+```
+
+Größte sinnvolle Einheit ist ein Bundesland. Rheinland-Pfalz liefert allein im
+Handwerk über 8000 Betriebe; ganz Deutschland wäre das Sechzehnfache und lässt
+sich weder von Overpass abfragen noch abtelefonieren.
+
+**Kreislisten** liegen als `kreise_de.json` bei: 398 Kreise und kreisfreie
+Städte (Berlin und Hamburg haben keine Kreisebene), ohne Netz nutzbar. Der
+Dialog hängt deshalb nie am Dienst. Zwei Besonderheiten der Quelle sind
+berücksichtigt: Der Landkreis Greiz führt in OpenStreetMap nur den amtlichen
+Gemeindeschlüssel (der Gebietsfilter greift deshalb auf beide Schlüssel zu),
+und Hanau (06415) ist kein Kreis. Nach einer Gebietsreform erneuern:
+
+```bash
+./venv/bin/python finden.py --kreise-erneuern
+```
+
+Das fragt Overpass mit Pausen ab; schlägt ein Land fehl, bleibt dessen alter
+Eintrag stehen.
+
+**Overpass ist ein gespendeter Dienst** und antwortet unter Last mit 429/504.
+Die Abfrage liest vorab den Status, hält die genannte Wartezeit ein und nennt
+bei Misserfolg *alle* Server mit ihrer Meldung. Die Suche läuft in der GUI im
+Hintergrund (Sekundenanzeige, jederzeit abbrechbar); das Schließen des
+Dialogs während einer Abfrage ist gefahrlos.
 
 ## CSV-Format
 
@@ -109,10 +173,10 @@ oben in [audit.py](audit.py) und sind zum Anpassen gedacht:
 | `https` | 14 | nur http, Zertifikat abgelaufen/ungültig, Mixed Content |
 | `mobil` | 18 | Viewport-Meta fehlt, Zoom gesperrt, feste Breite |
 | `aktualitaet` | 9 | Copyright-Jahr vor 2022, alter `Last-Modified`-Header |
-| `technologie` | 16 | Jimdo, Wix, Webnode, IONOS, Weebly, altes WordPress/Joomla/TYPO3, Slider Revolution, Flash, Frames, Tabellenlayout |
+| `technologie` | 16 | Jimdo, Wix, Webnode, IONOS, Weebly, altes WordPress/Joomla/TYPO3, Slider Revolution (Sicherheitsargument nur mit Versionsnachweis), Flash, Frames, Tabellenlayout |
 | `recht` | 15 | Impressum-/Datenschutz-Link, Consent-Banner, Google Fonts direkt von Google |
 | `seo` | 9 | Title, Meta-Description, H1-Anzahl, Anteil Bilder ohne alt |
-| `bilder` | 6 | Seitengewicht, Einzelbilder über 1,5 MB, Anteil Bilder unter 400 px |
+| `bilder` | 6 | Seitengewicht, Einzelbilder über 1,5 MB, Anteil Inhaltsbilder unter 400 px (erst ab 3 Inhaltsbildern) |
 | `kontakt` | 6 | kein `tel:`-Link, kein Kontaktformular |
 | `konsistenz` | 3 | Telefonnummer in der Meta-Description weicht vom Seitentext ab |
 | `pagespeed` | 5 | nur mit `--pagespeed`, mobiler Score der PSI-API |
@@ -136,11 +200,51 @@ eine ruinierte Seite nur bei etwa 45, und die Skala wird stumpf. 75 entspricht
 „in den vier bis fünf schwersten Kategorien komplett durchgefallen". Kleiner
 spreizt stärker nach oben, größer macht milder.
 
-Zur Orientierung: ab **35** gelb, ab **60** rot. Eine nicht erreichbare Seite
-bekommt 100 — sie ist der stärkste Anlass für einen Anruf. Eine durch
-robots.txt gesperrte Seite bekommt 0 und den Hinweis, sie manuell anzusehen;
-sie wäre sonst nur eine Lücke in der Bewertung, die wie ein gutes Ergebnis
-aussieht.
+Zur Orientierung: ab **35** gelb, ab **60** rot.
+
+### Nicht erreichbare Seiten
+
+Seiten, die sich nicht öffnen lassen (Timeout, DNS-Fehler, Verbindungsfehler,
+HTTP 5xx, durch robots.txt gesperrt), bekommen **keinen Chaos-Score**, sondern
+den Status `nicht erreichbar` samt Grund. Sie sortieren immer ans Ende der
+Liste (in jeder Sortierung), und ab „Score ab X" mit X > 0 tauchen sie nicht
+mehr auf; bei „Score ab 0" bleiben sie sichtbar, damit sie auffindbar sind.
+
+Der Grund: Eine tote Adresse sagt nichts über die Qualität der Seite, und in
+den Quelldaten stecken viele Tippfehler und veraltete Einträge. Mit Score 100
+standen sie sonst ganz oben, obwohl kein Anruf dahinter steht. In einem
+Testlauf waren **122 von 1518** geprüften Adressen betroffen, davon 69 mit
+DNS-Fehler. Die Empfehlung lautet deshalb immer „manuell ansehen" — erst im
+Browser prüfen, ob die Adresse stimmt. Verkaufsargumente gibt es für sie nicht.
+
+Ältere Cache-Einträge (`fehler`, `gesperrt`, `ok` mit HTTP 5xx) werden beim
+Lesen automatisch auf das neue Schema umgestellt, ohne neu zu prüfen.
+Bleibt eine Seite bei HTTP 4xx erreichbar, wird sie weiter bewertet.
+
+### Slider Revolution
+
+Das Plugin als Argument zu nennen setzt einen **Versionsnachweis** voraus. Er
+kommt aus dem Generator-Meta, dem `?ver=`-Parameter an Plugin-Dateien, einem
+Kommentar im Quelltext oder (nur die Hauptnummer) aus dem Dateipfad
+(`sr6/`, `rs6.min.js`; der Ordner `rs-plugin` gehört zu den Reihen 4 und 5).
+Nur wenn die Hauptversion unter `SLIDERREV_AKTUELLE_HAUPT` in
+[audit.py](audit.py) liegt, entsteht ein Sicherheitsargument, und auch das nur
+als Hinweis („sollte geprüft werden"). Reiner Fingerabdruck ohne Version
+bleibt als Befund `[Technik]` stehen, ohne Argument. Stand Dezember 2025 ist
+die Reihe **6.x** die aktuelle (Plugin 6.7.40); sie wird gepflegt und gilt
+nicht als veraltet. Die Konstante muss angepasst werden, falls Themepunch die
+Plugin-Hauptnummer auf 7 hebt.
+
+### Bildprüfung
+
+Gezählt werden nur **Inhaltsbilder**. Lazy-Load-Platzhalter (`data:`-URIs,
+`a3-lazy-load`, `lazy_placeholder.gif`, `dummy.png`, 1×1-GIFs) werden
+übersprungen; die Breite kommt aus dem größten Element von `srcset` bzw.
+`data-srcset`, sonst aus `data-src`, `data-lazy-src`, `data-original`,
+`data-lazyload` und zuletzt `src`. Logos, Icons, Zählpixel, SVGs sowie Bilder
+in Kopf, Navigation, Fuß und Seitenleiste zählen nicht. „Bilder zu klein" gibt
+es erst ab mindestens drei bewerteten Inhaltsbildern und wenn mehr als die
+Hälfte schmaler als 400 px ist.
 
 ### Spalte `argumente`
 
@@ -165,7 +269,7 @@ andere — für große Listen besser nur auf die Top-Kandidaten anwenden.
 
 - Ehrlicher User-Agent: `site-audit/1.0 (+paeffgen-it.de)`
 - `robots.txt` wird respektiert
-- Maximal 10 Seiten gleichzeitig, maximal 1 Request pro Sekunde und Host
+- Standardmäßig 30 Firmen gleichzeitig, aber weiterhin maximal 1 Request pro Sekunde und Host
 - Pro Seite nur die Startseite plus ein Blick auf den Impressum- und
   Datenschutz-Link. Kein Crawlen, keine Logins, keine abgeschickten Formulare
 - Netzfehler werden bis zu dreimal wiederholt, bevor eine Seite als nicht
@@ -186,7 +290,7 @@ Branche kommen immer frisch aus der CSV, nur die Bewertung stammt aus dem Cache.
 ./venv/bin/python -m pytest
 ```
 
-192 Tests gegen gespeicherte HTML-Fixtures in [tests/fixtures/](tests/fixtures/) —
+457 Tests gegen gespeicherte HTML-Fixtures in [tests/fixtures/](tests/fixtures/) —
 kein Netzzugriff. Abgedeckt sind die Score-Logik (Kombination, Normierung,
 Argumentbau), alle Checks, die Parser für Bildmaße, Telefonnummern und
 Copyright-Jahre, Rate-Limit, Cache, Statusbuch und Ausgabe sowie die GUI
@@ -197,6 +301,8 @@ Copyright-Jahre, Rate-Limit, Cache, Statusbuch und Ausgabe sowie die GUI
 | Datei | Zweck |
 |---|---|
 | [audit.py](audit.py) | Prüflogik und CLI, Gewichte ganz oben |
+| [finden.py](finden.py) | Firmensuche (OpenStreetMap) und Kreislisten |
+| [kreise_de.json](kreise_de.json) | mitgelieferte Kreisliste aller Bundesländer |
 | [gui.py](gui.py) | Qt-Oberfläche (PySide6) |
 | [install-desktop.sh](install-desktop.sh) | Menü- und Taskleisteneintrag anlegen |
 | [desktop/](desktop/) | Vorlage für den `.desktop`-Eintrag |

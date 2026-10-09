@@ -36,8 +36,13 @@ def test_land_filter_bindet_die_verwaltungsebene():
     assert "DE-NI" in f and 'admin_level"="4' in f
 
 
-def test_kreis_filter_nutzt_den_regionalschluessel():
-    assert kreis_filter("040120000000") == 'area["de:regionalschluessel"~"^040120000000"]'
+def test_kreis_filter_greift_auf_beide_schluessel_zu():
+    """Landkreis Greiz traegt in OSM nur den amtlichen Gemeindeschluessel. Ein Filter
+    allein ueber den Regionalschluessel fand dort stumm nichts."""
+    f = kreis_filter("16076")
+    assert 'area["de:regionalschluessel"~"^16076"]' in f
+    assert 'area["de:amtlicher_gemeindeschluessel"~"^16076"]' in f
+    assert f.startswith("(") and f.endswith(")"), "Vereinigung, damit ->.a; sie als Ganzes bekommt"
 
 
 def test_kreis_filter_trifft_beide_schluessellaengen():
@@ -56,9 +61,9 @@ def test_gebietsausdruecke_sind_vollstaendig():
     Fruehere Fassung ergab 'areaarea(...)' und lieferte stumm null Treffer.
     """
     assert land_filter("DE-HB").startswith("area")
-    assert kreis_filter("04012").startswith("area")
+    assert kreis_filter("04012").lstrip("(").startswith("area")
     for region in finden.REGIONEN.values():
-        assert region.filter.startswith("area"), region.titel
+        assert region.filter.lstrip("(").startswith("area"), region.titel
 
 
 # --- Abfrage bauen ---------------------------------------------------------

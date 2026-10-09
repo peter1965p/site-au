@@ -1,0 +1,1627 @@
+{
+ "DE-BB": [
+  [
+   "Barnim",
+   "12060"
+  ],
+  [
+   "Brandenburg an der Havel",
+   "12051"
+  ],
+  [
+   "Cottbus - Chóśebuz",
+   "12052"
+  ],
+  [
+   "Dahme-Spreewald",
+   "12061"
+  ],
+  [
+   "Elbe-Elster",
+   "12062"
+  ],
+  [
+   "Frankfurt (Oder)",
+   "12053"
+  ],
+  [
+   "Havelland",
+   "12063"
+  ],
+  [
+   "Märkisch-Oderland",
+   "12064"
+  ],
+  [
+   "Oberhavel",
+   "12065"
+  ],
+  [
+   "Oberspreewald-Lausitz - Górne Błota-Łužyca",
+   "12066"
+  ],
+  [
+   "Oder-Spree",
+   "12067"
+  ],
+  [
+   "Ostprignitz-Ruppin",
+   "12068"
+  ],
+  [
+   "Potsdam",
+   "12054"
+  ],
+  [
+   "Potsdam-Mittelmark",
+   "12069"
+  ],
+  [
+   "Prignitz",
+   "12070"
+  ],
+  [
+   "Spree-Neiße - Sprjewja-Nysa",
+   "12071"
+  ],
+  [
+   "Teltow-Fläming",
+   "12072"
+  ],
+  [
+   "Uckermark",
+   "12073"
+  ]
+ ],
+ "DE-BE": [],
+ "DE-BW": [
+  [
+   "Alb-Donau-Kreis",
+   "08425"
+  ],
+  [
+   "Baden-Baden",
+   "08211"
+  ],
+  [
+   "Bodenseekreis",
+   "08435"
+  ],
+  [
+   "Enzkreis",
+   "08236"
+  ],
+  [
+   "Freiburg im Breisgau",
+   "08311"
+  ],
+  [
+   "Heidelberg",
+   "08221"
+  ],
+  [
+   "Heilbronn",
+   "08121"
+  ],
+  [
+   "Hohenlohekreis",
+   "08126"
+  ],
+  [
+   "Karlsruhe",
+   "08212"
+  ],
+  [
+   "Landkreis Biberach",
+   "08426"
+  ],
+  [
+   "Landkreis Breisgau-Hochschwarzwald",
+   "08315"
+  ],
+  [
+   "Landkreis Böblingen",
+   "08115"
+  ],
+  [
+   "Landkreis Calw",
+   "08235"
+  ],
+  [
+   "Landkreis Emmendingen",
+   "08316"
+  ],
+  [
+   "Landkreis Esslingen",
+   "08116"
+  ],
+  [
+   "Landkreis Freudenstadt",
+   "08237"
+  ],
+  [
+   "Landkreis Göppingen",
+   "08117"
+  ],
+  [
+   "Landkreis Heidenheim",
+   "08135"
+  ],
+  [
+   "Landkreis Heilbronn",
+   "08125"
+  ],
+  [
+   "Landkreis Karlsruhe",
+   "08215"
+  ],
+  [
+   "Landkreis Konstanz",
+   "08335"
+  ],
+  [
+   "Landkreis Ludwigsburg",
+   "08118"
+  ],
+  [
+   "Landkreis Lörrach",
+   "08336"
+  ],
+  [
+   "Landkreis Rastatt",
+   "08216"
+  ],
+  [
+   "Landkreis Ravensburg",
+   "08436"
+  ],
+  [
+   "Landkreis Reutlingen",
+   "08415"
+  ],
+  [
+   "Landkreis Rottweil",
+   "08325"
+  ],
+  [
+   "Landkreis Schwäbisch Hall",
+   "08127"
+  ],
+  [
+   "Landkreis Sigmaringen",
+   "08437"
+  ],
+  [
+   "Landkreis Tuttlingen",
+   "08327"
+  ],
+  [
+   "Landkreis Tübingen",
+   "08416"
+  ],
+  [
+   "Landkreis Waldshut",
+   "08337"
+  ],
+  [
+   "Main-Tauber-Kreis",
+   "08128"
+  ],
+  [
+   "Mannheim",
+   "08222"
+  ],
+  [
+   "Neckar-Odenwald-Kreis",
+   "08225"
+  ],
+  [
+   "Ortenaukreis",
+   "08317"
+  ],
+  [
+   "Ostalbkreis",
+   "08136"
+  ],
+  [
+   "Pforzheim",
+   "08231"
+  ],
+  [
+   "Rems-Murr-Kreis",
+   "08119"
+  ],
+  [
+   "Rhein-Neckar-Kreis",
+   "08226"
+  ],
+  [
+   "Schwarzwald-Baar-Kreis",
+   "08326"
+  ],
+  [
+   "Stuttgart",
+   "08111"
+  ],
+  [
+   "Ulm",
+   "08421"
+  ],
+  [
+   "Zollernalbkreis",
+   "08417"
+  ]
+ ],
+ "DE-BY": [
+  [
+   "Amberg",
+   "09361"
+  ],
+  [
+   "Ansbach",
+   "09561"
+  ],
+  [
+   "Aschaffenburg",
+   "09661"
+  ],
+  [
+   "Augsburg",
+   "09761"
+  ],
+  [
+   "Bamberg",
+   "09461"
+  ],
+  [
+   "Bayreuth",
+   "09462"
+  ],
+  [
+   "Coburg",
+   "09463"
+  ],
+  [
+   "Erlangen",
+   "09562"
+  ],
+  [
+   "Fürth",
+   "09563"
+  ],
+  [
+   "Hof",
+   "09464"
+  ],
+  [
+   "Ingolstadt",
+   "09161"
+  ],
+  [
+   "Kaufbeuren",
+   "09762"
+  ],
+  [
+   "Kempten (Allgäu)",
+   "09763"
+  ],
+  [
+   "Landkreis Aichach-Friedberg",
+   "09771"
+  ],
+  [
+   "Landkreis Altötting",
+   "09171"
+  ],
+  [
+   "Landkreis Amberg-Sulzbach",
+   "09371"
+  ],
+  [
+   "Landkreis Ansbach",
+   "09571"
+  ],
+  [
+   "Landkreis Aschaffenburg",
+   "09671"
+  ],
+  [
+   "Landkreis Augsburg",
+   "09772"
+  ],
+  [
+   "Landkreis Bad Kissingen",
+   "09672"
+  ],
+  [
+   "Landkreis Bad Tölz-Wolfratshausen",
+   "09173"
+  ],
+  [
+   "Landkreis Bamberg",
+   "09471"
+  ],
+  [
+   "Landkreis Bayreuth",
+   "09472"
+  ],
+  [
+   "Landkreis Berchtesgadener Land",
+   "09172"
+  ],
+  [
+   "Landkreis Cham",
+   "09372"
+  ],
+  [
+   "Landkreis Coburg",
+   "09473"
+  ],
+  [
+   "Landkreis Dachau",
+   "09174"
+  ],
+  [
+   "Landkreis Deggendorf",
+   "09271"
+  ],
+  [
+   "Landkreis Dillingen an der Donau",
+   "09773"
+  ],
+  [
+   "Landkreis Dingolfing-Landau",
+   "09279"
+  ],
+  [
+   "Landkreis Donau-Ries",
+   "09779"
+  ],
+  [
+   "Landkreis Ebersberg",
+   "09175"
+  ],
+  [
+   "Landkreis Eichstätt",
+   "09176"
+  ],
+  [
+   "Landkreis Erding",
+   "09177"
+  ],
+  [
+   "Landkreis Erlangen-Höchstadt",
+   "09572"
+  ],
+  [
+   "Landkreis Forchheim",
+   "09474"
+  ],
+  [
+   "Landkreis Freising",
+   "09178"
+  ],
+  [
+   "Landkreis Freyung-Grafenau",
+   "09272"
+  ],
+  [
+   "Landkreis Fürstenfeldbruck",
+   "09179"
+  ],
+  [
+   "Landkreis Fürth",
+   "09573"
+  ],
+  [
+   "Landkreis Garmisch-Partenkirchen",
+   "09180"
+  ],
+  [
+   "Landkreis Günzburg",
+   "09774"
+  ],
+  [
+   "Landkreis Haßberge",
+   "09674"
+  ],
+  [
+   "Landkreis Hof",
+   "09475"
+  ],
+  [
+   "Landkreis Kelheim",
+   "09273"
+  ],
+  [
+   "Landkreis Kitzingen",
+   "09675"
+  ],
+  [
+   "Landkreis Kronach",
+   "09476"
+  ],
+  [
+   "Landkreis Kulmbach",
+   "09477"
+  ],
+  [
+   "Landkreis Landsberg am Lech",
+   "09181"
+  ],
+  [
+   "Landkreis Landshut",
+   "09274"
+  ],
+  [
+   "Landkreis Lichtenfels",
+   "09478"
+  ],
+  [
+   "Landkreis Lindau",
+   "09776"
+  ],
+  [
+   "Landkreis Main-Spessart",
+   "09677"
+  ],
+  [
+   "Landkreis Miesbach",
+   "09182"
+  ],
+  [
+   "Landkreis Miltenberg",
+   "09676"
+  ],
+  [
+   "Landkreis Mühldorf am Inn",
+   "09183"
+  ],
+  [
+   "Landkreis München",
+   "09184"
+  ],
+  [
+   "Landkreis Neu-Ulm",
+   "09775"
+  ],
+  [
+   "Landkreis Neuburg-Schrobenhausen",
+   "09185"
+  ],
+  [
+   "Landkreis Neumarkt in der Oberpfalz",
+   "09373"
+  ],
+  [
+   "Landkreis Neustadt an der Aisch-Bad Windsheim",
+   "09575"
+  ],
+  [
+   "Landkreis Neustadt an der Waldnaab",
+   "09374"
+  ],
+  [
+   "Landkreis Nürnberger Land",
+   "09574"
+  ],
+  [
+   "Landkreis Oberallgäu",
+   "09780"
+  ],
+  [
+   "Landkreis Ostallgäu",
+   "09777"
+  ],
+  [
+   "Landkreis Passau",
+   "09275"
+  ],
+  [
+   "Landkreis Pfaffenhofen an der Ilm",
+   "09186"
+  ],
+  [
+   "Landkreis Regen",
+   "09276"
+  ],
+  [
+   "Landkreis Regensburg",
+   "09375"
+  ],
+  [
+   "Landkreis Rhön-Grabfeld",
+   "09673"
+  ],
+  [
+   "Landkreis Rosenheim",
+   "09187"
+  ],
+  [
+   "Landkreis Roth",
+   "09576"
+  ],
+  [
+   "Landkreis Rottal-Inn",
+   "09277"
+  ],
+  [
+   "Landkreis Schwandorf",
+   "09376"
+  ],
+  [
+   "Landkreis Schweinfurt",
+   "09678"
+  ],
+  [
+   "Landkreis Starnberg",
+   "09188"
+  ],
+  [
+   "Landkreis Straubing-Bogen",
+   "09278"
+  ],
+  [
+   "Landkreis Tirschenreuth",
+   "09377"
+  ],
+  [
+   "Landkreis Traunstein",
+   "09189"
+  ],
+  [
+   "Landkreis Unterallgäu",
+   "09778"
+  ],
+  [
+   "Landkreis Weilheim-Schongau",
+   "09190"
+  ],
+  [
+   "Landkreis Weißenburg-Gunzenhausen",
+   "09577"
+  ],
+  [
+   "Landkreis Wunsiedel im Fichtelgebirge",
+   "09479"
+  ],
+  [
+   "Landkreis Würzburg",
+   "09679"
+  ],
+  [
+   "Landshut",
+   "09261"
+  ],
+  [
+   "Memmingen",
+   "09764"
+  ],
+  [
+   "München",
+   "09162"
+  ],
+  [
+   "Nürnberg",
+   "09564"
+  ],
+  [
+   "Passau",
+   "09262"
+  ],
+  [
+   "Regensburg",
+   "09362"
+  ],
+  [
+   "Rosenheim",
+   "09163"
+  ],
+  [
+   "Schwabach",
+   "09565"
+  ],
+  [
+   "Schweinfurt",
+   "09662"
+  ],
+  [
+   "Straubing",
+   "09263"
+  ],
+  [
+   "Weiden in der Oberpfalz",
+   "09363"
+  ],
+  [
+   "Würzburg",
+   "09663"
+  ]
+ ],
+ "DE-HB": [
+  [
+   "Bremen",
+   "04011"
+  ],
+  [
+   "Bremerhaven",
+   "04012"
+  ]
+ ],
+ "DE-HE": [
+  [
+   "Darmstadt",
+   "06411"
+  ],
+  [
+   "Frankfurt am Main",
+   "06412"
+  ],
+  [
+   "Hochtaunuskreis",
+   "06434"
+  ],
+  [
+   "Kassel",
+   "06611"
+  ],
+  [
+   "Kreis Bergstraße",
+   "06431"
+  ],
+  [
+   "Kreis Groß-Gerau",
+   "06433"
+  ],
+  [
+   "Lahn-Dill-Kreis",
+   "06532"
+  ],
+  [
+   "Landkreis Darmstadt-Dieburg",
+   "06432"
+  ],
+  [
+   "Landkreis Fulda",
+   "06631"
+  ],
+  [
+   "Landkreis Gießen",
+   "06531"
+  ],
+  [
+   "Landkreis Hersfeld-Rotenburg",
+   "06632"
+  ],
+  [
+   "Landkreis Kassel",
+   "06633"
+  ],
+  [
+   "Landkreis Limburg-Weilburg",
+   "06533"
+  ],
+  [
+   "Landkreis Marburg-Biedenkopf",
+   "06534"
+  ],
+  [
+   "Landkreis Offenbach",
+   "06438"
+  ],
+  [
+   "Landkreis Waldeck-Frankenberg",
+   "06635"
+  ],
+  [
+   "Main-Kinzig-Kreis",
+   "06435"
+  ],
+  [
+   "Main-Taunus-Kreis",
+   "06436"
+  ],
+  [
+   "Odenwaldkreis",
+   "06437"
+  ],
+  [
+   "Offenbach am Main",
+   "06413"
+  ],
+  [
+   "Rheingau-Taunus-Kreis",
+   "06439"
+  ],
+  [
+   "Schwalm-Eder-Kreis",
+   "06634"
+  ],
+  [
+   "Vogelsbergkreis",
+   "06535"
+  ],
+  [
+   "Werra-Meißner-Kreis",
+   "06636"
+  ],
+  [
+   "Wetteraukreis",
+   "06440"
+  ],
+  [
+   "Wiesbaden",
+   "06414"
+  ]
+ ],
+ "DE-HH": [],
+ "DE-MV": [
+  [
+   "Landkreis Rostock",
+   "13072"
+  ],
+  [
+   "Ludwigslust-Parchim",
+   "13076"
+  ],
+  [
+   "Mecklenburgische Seenplatte",
+   "13071"
+  ],
+  [
+   "Nordwestmecklenburg",
+   "13074"
+  ],
+  [
+   "Rostock",
+   "13003"
+  ],
+  [
+   "Schwerin",
+   "13004"
+  ],
+  [
+   "Vorpommern-Greifswald",
+   "13075"
+  ],
+  [
+   "Vorpommern-Rügen",
+   "13073"
+  ]
+ ],
+ "DE-NI": [
+  [
+   "Braunschweig",
+   "03101"
+  ],
+  [
+   "Delmenhorst",
+   "03401"
+  ],
+  [
+   "Emden",
+   "03402"
+  ],
+  [
+   "Heidekreis",
+   "03358"
+  ],
+  [
+   "Landkreis Ammerland",
+   "03451"
+  ],
+  [
+   "Landkreis Aurich",
+   "03452"
+  ],
+  [
+   "Landkreis Celle",
+   "03351"
+  ],
+  [
+   "Landkreis Cloppenburg",
+   "03453"
+  ],
+  [
+   "Landkreis Cuxhaven",
+   "03352"
+  ],
+  [
+   "Landkreis Diepholz",
+   "03251"
+  ],
+  [
+   "Landkreis Emsland",
+   "03454"
+  ],
+  [
+   "Landkreis Friesland",
+   "03455"
+  ],
+  [
+   "Landkreis Gifhorn",
+   "03151"
+  ],
+  [
+   "Landkreis Goslar",
+   "03153"
+  ],
+  [
+   "Landkreis Grafschaft Bentheim",
+   "03456"
+  ],
+  [
+   "Landkreis Göttingen",
+   "03159"
+  ],
+  [
+   "Landkreis Hameln-Pyrmont",
+   "03252"
+  ],
+  [
+   "Landkreis Harburg",
+   "03353"
+  ],
+  [
+   "Landkreis Helmstedt",
+   "03154"
+  ],
+  [
+   "Landkreis Hildesheim",
+   "03254"
+  ],
+  [
+   "Landkreis Holzminden",
+   "03255"
+  ],
+  [
+   "Landkreis Leer",
+   "03457"
+  ],
+  [
+   "Landkreis Lüchow-Dannenberg",
+   "03354"
+  ],
+  [
+   "Landkreis Lüneburg",
+   "03355"
+  ],
+  [
+   "Landkreis Nienburg/Weser",
+   "03256"
+  ],
+  [
+   "Landkreis Northeim",
+   "03155"
+  ],
+  [
+   "Landkreis Oldenburg",
+   "03458"
+  ],
+  [
+   "Landkreis Osnabrück",
+   "03459"
+  ],
+  [
+   "Landkreis Osterholz",
+   "03356"
+  ],
+  [
+   "Landkreis Peine",
+   "03157"
+  ],
+  [
+   "Landkreis Rotenburg (Wümme)",
+   "03357"
+  ],
+  [
+   "Landkreis Schaumburg",
+   "03257"
+  ],
+  [
+   "Landkreis Stade",
+   "03359"
+  ],
+  [
+   "Landkreis Uelzen",
+   "03360"
+  ],
+  [
+   "Landkreis Vechta",
+   "03460"
+  ],
+  [
+   "Landkreis Verden",
+   "03361"
+  ],
+  [
+   "Landkreis Wesermarsch",
+   "03461"
+  ],
+  [
+   "Landkreis Wittmund",
+   "03462"
+  ],
+  [
+   "Landkreis Wolfenbüttel",
+   "03158"
+  ],
+  [
+   "Oldenburg",
+   "03403"
+  ],
+  [
+   "Osnabrück",
+   "03404"
+  ],
+  [
+   "Region Hannover",
+   "03241"
+  ],
+  [
+   "Salzgitter",
+   "03102"
+  ],
+  [
+   "Wilhelmshaven",
+   "03405"
+  ],
+  [
+   "Wolfsburg",
+   "03103"
+  ]
+ ],
+ "DE-NW": [
+  [
+   "Bielefeld",
+   "05711"
+  ],
+  [
+   "Bochum",
+   "05911"
+  ],
+  [
+   "Bonn",
+   "05314"
+  ],
+  [
+   "Bottrop",
+   "05512"
+  ],
+  [
+   "Dortmund",
+   "05913"
+  ],
+  [
+   "Duisburg",
+   "05112"
+  ],
+  [
+   "Düsseldorf",
+   "05111"
+  ],
+  [
+   "Ennepe-Ruhr-Kreis",
+   "05954"
+  ],
+  [
+   "Essen",
+   "05113"
+  ],
+  [
+   "Gelsenkirchen",
+   "05513"
+  ],
+  [
+   "Hagen",
+   "05914"
+  ],
+  [
+   "Hamm",
+   "05915"
+  ],
+  [
+   "Herne",
+   "05916"
+  ],
+  [
+   "Hochsauerlandkreis",
+   "05958"
+  ],
+  [
+   "Krefeld",
+   "05114"
+  ],
+  [
+   "Kreis Borken",
+   "05554"
+  ],
+  [
+   "Kreis Coesfeld",
+   "05558"
+  ],
+  [
+   "Kreis Düren",
+   "05358"
+  ],
+  [
+   "Kreis Euskirchen",
+   "05366"
+  ],
+  [
+   "Kreis Gütersloh",
+   "05754"
+  ],
+  [
+   "Kreis Heinsberg",
+   "05370"
+  ],
+  [
+   "Kreis Herford",
+   "05758"
+  ],
+  [
+   "Kreis Höxter",
+   "05762"
+  ],
+  [
+   "Kreis Kleve",
+   "05154"
+  ],
+  [
+   "Kreis Lippe",
+   "05766"
+  ],
+  [
+   "Kreis Mettmann",
+   "05158"
+  ],
+  [
+   "Kreis Minden-Lübbecke",
+   "05770"
+  ],
+  [
+   "Kreis Olpe",
+   "05966"
+  ],
+  [
+   "Kreis Paderborn",
+   "05774"
+  ],
+  [
+   "Kreis Recklinghausen",
+   "05562"
+  ],
+  [
+   "Kreis Siegen-Wittgenstein",
+   "05970"
+  ],
+  [
+   "Kreis Soest",
+   "05974"
+  ],
+  [
+   "Kreis Steinfurt",
+   "05566"
+  ],
+  [
+   "Kreis Unna",
+   "05978"
+  ],
+  [
+   "Kreis Viersen",
+   "05166"
+  ],
+  [
+   "Kreis Warendorf",
+   "05570"
+  ],
+  [
+   "Kreis Wesel",
+   "05170"
+  ],
+  [
+   "Köln",
+   "05315"
+  ],
+  [
+   "Leverkusen",
+   "05316"
+  ],
+  [
+   "Märkischer Kreis",
+   "05962"
+  ],
+  [
+   "Mönchengladbach",
+   "05116"
+  ],
+  [
+   "Mülheim an der Ruhr",
+   "05117"
+  ],
+  [
+   "Münster",
+   "05515"
+  ],
+  [
+   "Oberbergischer Kreis",
+   "05374"
+  ],
+  [
+   "Oberhausen",
+   "05119"
+  ],
+  [
+   "Remscheid",
+   "05120"
+  ],
+  [
+   "Rhein-Erft-Kreis",
+   "05362"
+  ],
+  [
+   "Rhein-Kreis Neuss",
+   "05162"
+  ],
+  [
+   "Rhein-Sieg-Kreis",
+   "05382"
+  ],
+  [
+   "Rheinisch-Bergischer Kreis",
+   "05378"
+  ],
+  [
+   "Solingen",
+   "05122"
+  ],
+  [
+   "Städteregion Aachen",
+   "05334"
+  ],
+  [
+   "Wuppertal",
+   "05124"
+  ]
+ ],
+ "DE-RP": [
+  [
+   "Donnersbergkreis",
+   "07333"
+  ],
+  [
+   "Eifelkreis Bitburg-Prüm",
+   "07232"
+  ],
+  [
+   "Frankenthal (Pfalz)",
+   "07311"
+  ],
+  [
+   "Kaiserslautern",
+   "07312"
+  ],
+  [
+   "Koblenz",
+   "07111"
+  ],
+  [
+   "Landau in der Pfalz",
+   "07313"
+  ],
+  [
+   "Landkreis Ahrweiler",
+   "07131"
+  ],
+  [
+   "Landkreis Altenkirchen (Westerwald)",
+   "07132"
+  ],
+  [
+   "Landkreis Alzey-Worms",
+   "07331"
+  ],
+  [
+   "Landkreis Bad Dürkheim",
+   "07332"
+  ],
+  [
+   "Landkreis Bad Kreuznach",
+   "07133"
+  ],
+  [
+   "Landkreis Bernkastel-Wittlich",
+   "07231"
+  ],
+  [
+   "Landkreis Birkenfeld",
+   "07134"
+  ],
+  [
+   "Landkreis Cochem-Zell",
+   "07135"
+  ],
+  [
+   "Landkreis Germersheim",
+   "07334"
+  ],
+  [
+   "Landkreis Kaiserslautern",
+   "07335"
+  ],
+  [
+   "Landkreis Kusel",
+   "07336"
+  ],
+  [
+   "Landkreis Mainz-Bingen",
+   "07339"
+  ],
+  [
+   "Landkreis Mayen-Koblenz",
+   "07137"
+  ],
+  [
+   "Landkreis Neuwied",
+   "07138"
+  ],
+  [
+   "Landkreis Südliche Weinstraße",
+   "07337"
+  ],
+  [
+   "Landkreis Trier-Saarburg",
+   "07235"
+  ],
+  [
+   "Landkreis Vulkaneifel",
+   "07233"
+  ],
+  [
+   "Ludwigshafen am Rhein",
+   "07314"
+  ],
+  [
+   "Mainz",
+   "07315"
+  ],
+  [
+   "Neustadt an der Weinstraße",
+   "07316"
+  ],
+  [
+   "Pirmasens",
+   "07317"
+  ],
+  [
+   "Rhein-Hunsrück-Kreis",
+   "07140"
+  ],
+  [
+   "Rhein-Lahn-Kreis",
+   "07141"
+  ],
+  [
+   "Rhein-Pfalz-Kreis",
+   "07338"
+  ],
+  [
+   "Speyer",
+   "07318"
+  ],
+  [
+   "Südwestpfalz",
+   "07340"
+  ],
+  [
+   "Trier",
+   "07211"
+  ],
+  [
+   "Westerwaldkreis",
+   "07143"
+  ],
+  [
+   "Worms",
+   "07319"
+  ],
+  [
+   "Zweibrücken",
+   "07320"
+  ]
+ ],
+ "DE-SH": [
+  [
+   "Flensburg",
+   "01001"
+  ],
+  [
+   "Kiel",
+   "01002"
+  ],
+  [
+   "Kreis Dithmarschen",
+   "01051"
+  ],
+  [
+   "Kreis Herzogtum Lauenburg",
+   "01053"
+  ],
+  [
+   "Kreis Nordfriesland",
+   "01054"
+  ],
+  [
+   "Kreis Ostholstein",
+   "01055"
+  ],
+  [
+   "Kreis Pinneberg",
+   "01056"
+  ],
+  [
+   "Kreis Plön",
+   "01057"
+  ],
+  [
+   "Kreis Rendsburg-Eckernförde",
+   "01058"
+  ],
+  [
+   "Kreis Schleswig-Flensburg",
+   "01059"
+  ],
+  [
+   "Kreis Segeberg",
+   "01060"
+  ],
+  [
+   "Kreis Steinburg",
+   "01061"
+  ],
+  [
+   "Kreis Stormarn",
+   "01062"
+  ],
+  [
+   "Lübeck",
+   "01003"
+  ],
+  [
+   "Neumünster",
+   "01004"
+  ]
+ ],
+ "DE-SL": [
+  [
+   "Landkreis Merzig-Wadern",
+   "10042"
+  ],
+  [
+   "Landkreis Neunkirchen",
+   "10043"
+  ],
+  [
+   "Landkreis Saarlouis",
+   "10044"
+  ],
+  [
+   "Landkreis St. Wendel",
+   "10046"
+  ],
+  [
+   "Regionalverband Saarbrücken",
+   "10041"
+  ],
+  [
+   "Saarpfalz-Kreis",
+   "10045"
+  ]
+ ],
+ "DE-SN": [
+  [
+   "Bautzen - Budyšin",
+   "14625"
+  ],
+  [
+   "Chemnitz",
+   "14511"
+  ],
+  [
+   "Dresden",
+   "14612"
+  ],
+  [
+   "Erzgebirgskreis",
+   "14521"
+  ],
+  [
+   "Görlitz",
+   "14626"
+  ],
+  [
+   "Landkreis Leipzig",
+   "14729"
+  ],
+  [
+   "Leipzig",
+   "14713"
+  ],
+  [
+   "Meißen",
+   "14627"
+  ],
+  [
+   "Mittelsachsen",
+   "14522"
+  ],
+  [
+   "Nordsachsen",
+   "14730"
+  ],
+  [
+   "Sächsische Schweiz-Osterzgebirge",
+   "14628"
+  ],
+  [
+   "Vogtlandkreis",
+   "14523"
+  ],
+  [
+   "Zwickau",
+   "14524"
+  ]
+ ],
+ "DE-ST": [
+  [
+   "Altmarkkreis Salzwedel",
+   "15081"
+  ],
+  [
+   "Anhalt-Bitterfeld",
+   "15082"
+  ],
+  [
+   "Burgenlandkreis",
+   "15084"
+  ],
+  [
+   "Börde",
+   "15083"
+  ],
+  [
+   "Dessau-Roßlau",
+   "15001"
+  ],
+  [
+   "Halle (Saale)",
+   "15002"
+  ],
+  [
+   "Jerichower Land",
+   "15086"
+  ],
+  [
+   "Landkreis Harz",
+   "15085"
+  ],
+  [
+   "Magdeburg",
+   "15003"
+  ],
+  [
+   "Mansfeld-Südharz",
+   "15087"
+  ],
+  [
+   "Saalekreis",
+   "15088"
+  ],
+  [
+   "Salzlandkreis",
+   "15089"
+  ],
+  [
+   "Stendal",
+   "15090"
+  ],
+  [
+   "Wittenberg",
+   "15091"
+  ]
+ ],
+ "DE-TH": [
+  [
+   "Altenburger Land",
+   "16077"
+  ],
+  [
+   "Erfurt",
+   "16051"
+  ],
+  [
+   "Gera",
+   "16052"
+  ],
+  [
+   "Greiz",
+   "16076"
+  ],
+  [
+   "Ilm-Kreis",
+   "16070"
+  ],
+  [
+   "Jena",
+   "16053"
+  ],
+  [
+   "Kyffhäuserkreis",
+   "16065"
+  ],
+  [
+   "Landkreis Eichsfeld",
+   "16061"
+  ],
+  [
+   "Landkreis Gotha",
+   "16067"
+  ],
+  [
+   "Landkreis Hildburghausen",
+   "16069"
+  ],
+  [
+   "Landkreis Nordhausen",
+   "16062"
+  ],
+  [
+   "Landkreis Saalfeld-Rudolstadt",
+   "16073"
+  ],
+  [
+   "Landkreis Schmalkalden-Meiningen",
+   "16066"
+  ],
+  [
+   "Landkreis Sonneberg",
+   "16072"
+  ],
+  [
+   "Landkreis Sömmerda",
+   "16068"
+  ],
+  [
+   "Landkreis Weimarer Land",
+   "16071"
+  ],
+  [
+   "Saale-Holzland-Kreis",
+   "16074"
+  ],
+  [
+   "Saale-Orla-Kreis",
+   "16075"
+  ],
+  [
+   "Suhl",
+   "16054"
+  ],
+  [
+   "Unstrut-Hainich-Kreis",
+   "16064"
+  ],
+  [
+   "Wartburgkreis",
+   "16063"
+  ],
+  [
+   "Weimar",
+   "16055"
+  ]
+ ],
+ "_stand": "2026-10-09",
+ "_quelle": "OpenStreetMap (ODbL), per `python finden.py --kreise-erneuern` erneuerbar",
+ "_hinweis": "Berlin und Hamburg haben keine Kreisebene. Hanau (06415) ist kein Kreis. Landkreis Greiz (16076) traegt in OSM nur den amtlichen Gemeindeschluessel."
+}

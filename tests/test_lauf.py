@@ -210,7 +210,8 @@ def test_standardaufruf_setzt_sinnvolle_vorgaben():
     assert str(args.out) == "ergebnis"
     assert args.pagespeed is False
     assert args.refresh is False
-    assert args.concurrency == 10
+    assert args.concurrency == audit.MAX_PARALLEL
+    assert args.assets == audit.DEFAULT_ASSETS
     assert args.host_interval == 1.0
 
 

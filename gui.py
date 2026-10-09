@@ -8,6 +8,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import faulthandler
+import gc
+import threading
+import time
 import os
 import sys
 from dataclasses import dataclass
@@ -19,6 +23,8 @@ from PySide6.QtCore import (
     QDate,
     QEasingCurve,
     QModelIndex,
+    QTimer,
+    QObject,
     QPropertyAnimation,
     QRectF,
     QSize,
@@ -61,6 +67,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QProgressBar,
     QPushButton,
+    QSpinBox,
     QSplitter,
     QStyledItemDelegate,
     QTableView,
@@ -97,8 +104,10 @@ APP_ID = "site-audit"
 ICON = Path(__file__).resolve().parent / "assets" / "site-audit.svg"
 
 
-def score_farbe(score: float, status: str) -> str:
-    if status == "gesperrt":
+def score_farbe(score: float | None, status: str) -> str:
+    # Nicht bewertete Seiten (nicht erreichbar, Pruefung gescheitert) bekommen
+    # keine Ampelfarbe - Rot oder Gruen wuerde ein Urteil vortaeuschen.
+    if score is None or status != "ok":
         return MUTED
     if score >= SCHWELLE_ROT:
         return BAD
@@ -268,22 +277,36 @@ class LaufThread(QThread):
 # ---------------------------------------------------------------------------
 
 
-class SuchThread(QThread):
-    """Overpass-Abfragen laufen nebenher, sonst friert das Fenster ein."""
+class _Bote(QObject):
+    """Bringt Ergebnisse aus einem Hintergrund-Thread sicher in die Oberflaeche."""
 
-    fertig = Signal(object)
-    fehlgeschlagen = Signal(str)
+    fertig = Signal(int, object)  # Auftragsnummer, Ergebnis
+    fehlgeschlagen = Signal(int, str)
 
-    def __init__(self, aufgabe, *args) -> None:
-        super().__init__()
-        self.aufgabe = aufgabe
-        self.args = args
 
-    def run(self) -> None:  # noqa: D102
+def im_hintergrund(bote: _Bote, auftrag: int, aufgabe, *args) -> None:
+    """Fuehrt `aufgabe` in einem Daemon-Thread aus und meldet das Ergebnis ueber `bote`.
+
+    Bewusst kein QThread. Schliesst jemand den Dialog oder das Fenster, waehrend
+    die Netzabfrage noch haengt, zerstoert Qt das Thread-Objekt - und bricht dann
+    das ganze Programm ab ("QThread: Destroyed while thread is still running",
+    Speicherabzug). Ein Daemon-Thread stirbt beim Beenden still mit. Eine
+    haengende Netzabfrage laesst sich ohnehin nicht unterbrechen.
+    """
+
+    def lauf() -> None:
         try:
-            self.fertig.emit(self.aufgabe(*self.args))
-        except Exception as exc:  # noqa: BLE001 - Fehler gehoeren in die GUI
-            self.fehlgeschlagen.emit(str(exc))
+            ergebnis = aufgabe(*args)
+            meldung = lambda: bote.fertig.emit(auftrag, ergebnis)  # noqa: E731
+        except Exception as exc:  # noqa: BLE001 - Fehler gehoeren in die GUI, nicht in die Konsole
+            text = str(exc)
+            meldung = lambda: bote.fehlgeschlagen.emit(auftrag, text)  # noqa: E731
+        try:
+            meldung()
+        except RuntimeError:
+            pass  # Dialog inzwischen geschlossen und zerstoert - niemand wartet mehr
+
+    threading.Thread(target=lauf, daemon=True).start()
 
 
 class SuchDialog(QDialog):
@@ -300,7 +323,20 @@ class SuchDialog(QDialog):
         self.setWindowTitle("Firmen suchen")
         self.setMinimumWidth(520)
         self.firmen: list = []
-        self._thread: SuchThread | None = None
+        # Hintergrundarbeit: jede Anfrage bekommt eine Nummer. Antworten mit alter
+        # Nummer (Land inzwischen gewechselt) werden verworfen, sonst landen die
+        # Kreise von Bayern im Feld von Hessen.
+        self._bote = _Bote()
+        self._bote.fertig.connect(self._antwort)
+        self._bote.fehlgeschlagen.connect(self._antwort_fehler)
+        self._auftrag = 0
+        self._nach_fertig = None
+        self._nach_fehler = None
+        self._seit = 0.0
+        self._basis_text = ""
+        self._uhr = QTimer(self)
+        self._uhr.setInterval(1000)
+        self._uhr.timeout.connect(self._tick)
 
         lay = QVBoxLayout(self)
         lay.setSpacing(10)
@@ -376,15 +412,41 @@ class SuchDialog(QDialog):
         if not iso:
             return
         self.cb_schnell.setCurrentIndex(0)
-        self.lbl_stand.setText("Lade Kreise …")
-        self.btn_suchen.setEnabled(False)
-        self._starten(finden.kreise, iso, fertig=self._kreise_da)
+        self._auftrag += 1  # eine noch laufende Kreis-Abfrage des vorigen Landes verwerfen
+        self._uhr.stop()
+        self.btn_suchen.setEnabled(True)
+
+        # Normalfall: die Kreise liegen mit dem Programm bei, ohne Netz und ohne Warten.
+        lokal = finden.kreise_lokal(iso)
+        if lokal is not None:
+            self._kreise_da(lokal)
+            return
+        # Nur wenn die Liste fehlt, wird Overpass gefragt - mit Zeitgrenze und ohne
+        # die Suche zu blockieren: "ganzes Bundesland" bleibt waehrenddessen waehlbar.
+        self._starten(
+            "Lade Kreise", finden.kreise, iso, fertig=self._kreise_da, fehler=self._kreise_fehler
+        )
 
     def _kreise_da(self, kreise: list) -> None:
-        for name, osm_id in kreise:
-            self.cb_kreis.addItem(name, osm_id)
-        self.cb_kreis.setEnabled(True)
-        self.lbl_stand.setText(f"{len(kreise)} Kreise und kreisfreie Städte.")
+        self._uhr.stop()
+        self.cb_kreis.clear()
+        self.cb_kreis.addItem("ganzes Bundesland", "")
+        for name, schluessel in kreise:
+            self.cb_kreis.addItem(name, schluessel)
+        self.cb_kreis.setEnabled(bool(kreise))
+        if kreise:
+            self.lbl_stand.setText(f"{len(kreise)} Kreise und kreisfreie Städte.")
+        else:
+            self.lbl_stand.setText("Stadtstaat: keine Kreisebene, es wird das ganze Land durchsucht.")
+        self.btn_suchen.setEnabled(True)
+
+    def _kreise_fehler(self, text: str) -> None:
+        """Ohne Kreisliste geht trotzdem die Suche im ganzen Bundesland."""
+        self._uhr.stop()
+        self.lbl_stand.setText(
+            "Die Kreisliste konnte gerade nicht geladen werden. Das ganze Bundesland lässt "
+            "sich trotzdem durchsuchen."
+        )
         self.btn_suchen.setEnabled(True)
 
     def schnellwahl_gewechselt(self) -> None:
@@ -412,13 +474,34 @@ class SuchDialog(QDialog):
 
     # --- Suche ---
 
-    def _starten(self, aufgabe, *args, fertig) -> None:
-        self._thread = SuchThread(aufgabe, *args)
-        self._thread.fertig.connect(fertig)
-        self._thread.fehlgeschlagen.connect(self._fehler)
-        self._thread.start()
+    def _starten(self, beschreibung: str, aufgabe, *args, fertig, fehler=None) -> None:
+        self._auftrag += 1
+        self._nach_fertig = fertig
+        self._nach_fehler = fehler or self._fehler
+        self._basis_text = beschreibung
+        self._seit = time.monotonic()
+        self._tick()
+        self._uhr.start()
+        im_hintergrund(self._bote, self._auftrag, aufgabe, *args)
+
+    def _tick(self) -> None:
+        """Zeigt, dass die Abfrage lebt - und sagt nach einer Minute, warum es dauert."""
+        sek = int(time.monotonic() - self._seit)
+        text = f"{self._basis_text} … {sek} s"
+        if sek >= 60:
+            text += "  ·  Der Dienst ist gerade ausgelastet. Abbrechen ist jederzeit möglich."
+        self.lbl_stand.setText(text)
+
+    def _antwort(self, auftrag: int, ergebnis) -> None:
+        if auftrag == self._auftrag and self._nach_fertig is not None:
+            self._nach_fertig(ergebnis)
+
+    def _antwort_fehler(self, auftrag: int, text: str) -> None:
+        if auftrag == self._auftrag and self._nach_fehler is not None:
+            self._nach_fehler(text)
 
     def _fehler(self, text: str) -> None:
+        self._uhr.stop()
         self.lbl_stand.setText("")
         self.btn_suchen.setEnabled(True)
         QMessageBox.warning(self, "Suche fehlgeschlagen", text)
@@ -434,12 +517,13 @@ class SuchDialog(QDialog):
             return
 
         self.btn_suchen.setEnabled(False)
-        self.lbl_stand.setText(
-            f"Suche in {gebiet.titel} … Bei einem ganzen Bundesland kann das eine Minute dauern."
+        self._starten(
+            f"Suche in {gebiet.titel} (bei einem ganzen Bundesland bis zu einer Minute)",
+            finden.suchen_in, gebiet, branchen, fertig=self._firmen_da,
         )
-        self._starten(finden.suchen_in, gebiet, branchen, fertig=self._firmen_da)
 
     def _firmen_da(self, firmen: list) -> None:
+        self._uhr.stop()
         self.firmen = firmen
         self.btn_suchen.setEnabled(True)
         if not firmen:
@@ -519,7 +603,7 @@ class LeadModel(QAbstractTableModel):
 
         if role == ROLLE_SORT:
             return {
-                S_SCORE: r.score,
+                S_SCORE: r.score if r.score is not None else -1.0,
                 S_FIRMA: r.name.lower(),
                 S_ORT: r.ort.lower(),
                 S_TECHNIK: (r.cms or "").lower(),
@@ -531,13 +615,15 @@ class LeadModel(QAbstractTableModel):
 
         if role == Qt.ItemDataRole.DisplayRole:
             if col == S_SCORE:
-                return f"{r.score:.0f}"
+                return "–" if r.score is None else f"{r.score:.0f}"
             if col == S_FIRMA:
                 return r.name
             if col == S_ORT:
                 return r.ort or "–"
             if col == S_TECHNIK:
-                return r.cms or "–"
+                # Bei nicht bewerteten Seiten steht hier der Grund, damit man
+                # sie in der Liste sofort von bewerteten unterscheidet.
+                return r.status if r.status != "ok" else (r.cms or "–")
             if col == S_SCHRITT:
                 return r.empfehlung or ""
             if col == S_KONTAKT:
@@ -555,7 +641,8 @@ class LeadModel(QAbstractTableModel):
                 return ("⚑ " if faellig else "") + st.wiedervorlage
 
         if role == Qt.ItemDataRole.ToolTipRole:
-            teile = [f"{r.name} — Score {r.score:.0f}", r.final_url or r.url]
+            wert = f"Score {r.score:.0f}" if r.score is not None else r.status
+            teile = [f"{r.name} — {wert}", r.final_url or r.url]
             if r.empfehlung:
                 teile += ["", f"{r.empfehlung}: {r.empfehlung_grund}"]
             if r.argumente:
@@ -573,6 +660,8 @@ class LeadModel(QAbstractTableModel):
                 return QColor(WARN)
             if col == S_AKQUISE and st.status != "offen":
                 return QColor(ACCENT)
+            if col == S_TECHNIK and r.status != "ok":
+                return QColor(WARN)
             if col in (S_ORT, S_TECHNIK):
                 return QColor(MUTED)
 
@@ -598,8 +687,8 @@ class ScoreDelegate(QStyledItemDelegate):
     def paint(self, painter: QPainter, option, index) -> None:
         super().paint(painter, option, index)
         z = index.data(ROLLE_ZEILE)
-        if z is None:
-            return
+        if z is None or z.result.score is None:
+            return  # ohne Score kein Balken
         farbe = QColor(score_farbe(z.result.score, z.result.status))
         rect = option.rect
         breite = max(2, int((rect.width() - 16) * min(100.0, z.result.score) / 100))
@@ -641,6 +730,22 @@ class LeadFilter(QSortFilterProxyModel):
         self.nur_faellig = False
         self.setSortRole(ROLLE_SORT)
 
+    def lessThan(self, left: QModelIndex, right: QModelIndex) -> bool:
+        """Nicht bewertete Seiten stehen immer ganz unten.
+
+        Egal, in welcher Richtung sortiert wird und nach welcher Spalte. Qt
+        dreht bei absteigender Sortierung das Ergebnis von lessThan() um,
+        deshalb muss die Regel von der Richtung abhaengen.
+        """
+        model: LeadModel = self.sourceModel()
+        a, b = model.zeile(left.row()), model.zeile(right.row())
+        if a is not None and b is not None:
+            a_ohne, b_ohne = a.result.score is None, b.result.score is None
+            if a_ohne != b_ohne:
+                absteigend = self.sortOrder() == Qt.SortOrder.DescendingOrder
+                return a_ohne if absteigend else b_ohne
+        return super().lessThan(left, right)
+
     def filterAcceptsRow(self, row: int, parent: QModelIndex) -> bool:
         model: LeadModel = self.sourceModel()
         z = model.zeile(row)
@@ -655,7 +760,10 @@ class LeadFilter(QSortFilterProxyModel):
             return False
         if self.schritt and r.empfehlung != self.schritt:
             return False
-        if r.score < self.min_score:
+        # "Score ab X" gilt nur fuer bewertete Seiten. Nicht erreichbare haben
+        # keinen Score und tauchen deshalb ab X > 0 nicht auf; bei 0 ("kein
+        # Filter") bleiben sie sichtbar, sonst waeren sie gar nicht auffindbar.
+        if self.min_score > 0 and (r.score is None or r.score < self.min_score):
             return False
         if self.nur_faellig:
             if not st.wiedervorlage or st.wiedervorlage > date.today().isoformat():
@@ -738,6 +846,21 @@ class Fenster(QMainWindow):
         aussen.addWidget(teiler, 1)
 
         self.setCentralWidget(zentral)
+
+        # Parallelitaet: so viele Firmen werden gleichzeitig geprueft. Die
+        # Hoeflichkeit gegenueber den Seiten bleibt davon unberuehrt, sie
+        # regelt der Takt von 1 Request pro Sekunde und Host.
+        self.sp_parallel = QSpinBox()
+        self.sp_parallel.setRange(1, 60)
+        self.sp_parallel.setPrefix("Parallel  ")
+        self.sp_parallel.setValue(self.einstellungen.value("parallel", audit.MAX_PARALLEL, type=int))
+        self.sp_parallel.setToolTip(
+            "Wie viele Firmen gleichzeitig geprüft werden.\n"
+            "Höher = schneller. Pro Seite bleibt es bei höchstens\n"
+            "einem Abruf pro Sekunde, die Zahl belastet keine einzelne Seite stärker."
+        )
+        self.sp_parallel.valueChanged.connect(lambda v: self.einstellungen.setValue("parallel", v))
+        self.statusBar().addPermanentWidget(self.sp_parallel)
 
         self.fortschritt = QProgressBar()
         self.fortschritt.setMaximumWidth(260)
@@ -1006,13 +1129,22 @@ class Fenster(QMainWindow):
     def firmen_suchen(self) -> None:
         """Suchdialog oeffnen und die Treffer als Leads uebernehmen."""
         dialog = SuchDialog(self)
-        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.firmen:
+        angenommen = dialog.exec() == QDialog.DialogCode.Accepted
+        gefunden = list(dialog.firmen)
+        # Den Dialog jetzt im Hauptthread abbauen, nicht erst irgendwann. Er und seine
+        # Kindelemente (Schalter, Animationen, Timer ...) bilden Referenzzyklen und
+        # bleiben sonst als Muell liegen, bis Pythons Speicherbereinigung sie holt -
+        # und die laeuft gern im Pruef-Thread, sobald der zehntausende Objekte
+        # anlegt. Dort ein Qt-Widget abzuraeumen endet im Speicherzugriffsfehler.
+        dialog.deleteLater()
+        dialog = None
+        if not angenommen or not gefunden:
             return
 
         neue = [
             Lead(name=f.name, url=f.url, ort=f.ort, branche=f.branche,
                  telefon=f.telefon, email=f.email)
-            for f in dialog.firmen
+            for f in gefunden
         ]
 
         # An eine offene Liste anhaengen statt sie zu ersetzen - so lassen
@@ -1099,7 +1231,7 @@ class Fenster(QMainWindow):
             Zeile(r, alle.get(Statusbuch.key(r.url), LeadStatus(url_key=Statusbuch.key(r.url))))
             for r in ergebnisse
         ]
-        zeilen.sort(key=lambda z: (-z.result.score, z.result.name.lower()))
+        zeilen.sort(key=lambda z: audit.sortierschluessel(z.result))
         self.model.setzen(zeilen)
         self._filter_listen_fuellen(ergebnisse)
         self.filter_anwenden()
@@ -1213,7 +1345,21 @@ class Fenster(QMainWindow):
                 hinweis.setStyleSheet(f"color: {MUTED};")
                 self.web_platz.layout().addWidget(hinweis)
                 return None
+            from PySide6.QtWebEngineCore import QWebEnginePage
+
+            class StillePage(QWebEnginePage):
+                """Verschluckt die JavaScript-Konsole der besuchten Seiten.
+
+                Wix, Facebook & Co. melden dort dauernd eigene Fehler ("Could not
+                find element ..."), die mit unserem Programm nichts zu tun haben und
+                die Konsole zumuellen.
+                """
+
+                def javaScriptConsoleMessage(self, level, message, line, source) -> None:  # noqa: N802
+                    return
+
             self.browser = QWebEngineView()
+            self.browser.setPage(StillePage(self.browser))
             self.web_platz.layout().addWidget(self.browser)
         return self.browser
 
@@ -1288,10 +1434,20 @@ class Fenster(QMainWindow):
 
     def _befund_html(self, r: Result) -> str:
         farbe = score_farbe(r.score, r.status)
+        if r.score is None:
+            kopf = (
+                f'<p style="font-size:22px; font-weight:700; color:{farbe}; margin:0 0 2px;">'
+                f'{self._esc(r.status)}'
+                f'<span style="font-size:13px; color:{MUTED}; font-weight:400;"> &nbsp;kein Chaos-Score</span></p>'
+            )
+        else:
+            kopf = (
+                f'<p style="font-size:30px; font-weight:700; color:{farbe}; margin:0 0 2px;">{r.score:.0f}'
+                f'<span style="font-size:13px; color:{MUTED}; font-weight:400;"> / 100 Chaos-Score</span></p>'
+            )
         teile = [
             f'<body style="background:{PANEL}; color:{FG}; font-family:sans-serif; font-size:14px;">',
-            f'<p style="font-size:30px; font-weight:700; color:{farbe}; margin:0 0 2px;">{r.score:.0f}'
-            f'<span style="font-size:13px; color:{MUTED}; font-weight:400;"> / 100 Chaos-Score</span></p>',
+            kopf,
         ]
         if r.argumente:
             teile.append(
@@ -1340,6 +1496,21 @@ class Fenster(QMainWindow):
 
     # --- Lauf --------------------------------------------------------------
 
+    def lauf_argumente(self) -> argparse.Namespace:
+        """Einstellungen fuer audit.run(), so wie sie jetzt in der Oberflaeche stehen."""
+        return argparse.Namespace(
+            pagespeed=self.chk_psi.isChecked() and self.psi_key is not None,
+            refresh=self.chk_refresh.isChecked(),
+            cache=self.db_pfad,
+            no_cache=False,
+            max_age=0,
+            concurrency=self.sp_parallel.value(),
+            host_interval=audit.HOST_INTERVAL,
+            assets=audit.DEFAULT_ASSETS,
+            timeout=audit.DEFAULT_TIMEOUT,
+            verzeichnis=True,
+        )
+
     def lauf_starten(self) -> None:
         if self.lauf is not None and self.lauf.isRunning():
             return
@@ -1347,18 +1518,7 @@ class Fenster(QMainWindow):
             QMessageBox.information(self, "Keine Leads", "Erst eine Leads-CSV öffnen.")
             return
 
-        args = argparse.Namespace(
-            pagespeed=self.chk_psi.isChecked() and self.psi_key is not None,
-            refresh=self.chk_refresh.isChecked(),
-            cache=self.db_pfad,
-            no_cache=False,
-            max_age=0,
-            concurrency=audit.MAX_PARALLEL,
-            host_interval=audit.HOST_INTERVAL,
-            assets=audit.DEFAULT_ASSETS,
-            timeout=audit.DEFAULT_TIMEOUT,
-            verzeichnis=True,
-        )
+        args = self.lauf_argumente()
 
         self.lauf = LaufThread(self.leads, args, self.psi_key)
         self.lauf.fortschritt.connect(self.lauf_fortschritt)
@@ -1369,6 +1529,7 @@ class Fenster(QMainWindow):
         self.btn_start.setEnabled(False)
         self.btn_stop.setEnabled(True)
         self.btn_oeffnen.setEnabled(False)
+        self.sp_parallel.setEnabled(False)
         self.fortschritt.setVisible(True)
         self.fortschritt.setRange(0, len(self.leads))
         self.fortschritt.setValue(0)
@@ -1383,7 +1544,8 @@ class Fenster(QMainWindow):
 
     def lauf_fortschritt(self, fertig: int, gesamt: int, res: Result, aus_cache: bool) -> None:
         self.fortschritt.setValue(fertig)
-        woher = "aus Cache" if aus_cache else f"Score {res.score:.0f}"
+        wert = f"Score {res.score:.0f}" if res.score is not None else res.status
+        woher = "aus Cache" if aus_cache else wert
         self.statusBar().showMessage(f"[{fertig}/{gesamt}]  {res.name} — {woher}")
 
     def lauf_fertig(self, ergebnisse: list[Result]) -> None:
@@ -1398,6 +1560,7 @@ class Fenster(QMainWindow):
         self.btn_start.setEnabled(True)
         self.btn_stop.setEnabled(False)
         self.btn_oeffnen.setEnabled(True)
+        self.sp_parallel.setEnabled(True)
         self.fortschritt.setVisible(False)
         self.lauf = None
 
@@ -1447,8 +1610,8 @@ class Fenster(QMainWindow):
           {self._esc(r.final_url or r.url)}<br>
           {self._esc(r.ort)} &middot; {self._esc(r.branche)} &middot; {self._esc(r.cms or "Technik unbekannt")}
         </p>
-        <p style="font-size:15pt;"><b>Chaos-Score {r.score:.0f} / 100</b>
-          &nbsp;<span style="color:#555;">(höher = mehr Relaunch-Bedarf)</span>
+        <p style="font-size:15pt;"><b>{f"Chaos-Score {r.score:.0f} / 100" if r.score is not None else self._esc(r.status)}</b>
+          &nbsp;<span style="color:#555;">{"(höher = mehr Relaunch-Bedarf)" if r.score is not None else "(nicht bewertet)"}</span>
           {f"&nbsp;&middot;&nbsp; PageSpeed mobil {r.pagespeed}/100" if r.pagespeed is not None else ""}
         </p>
         <h3>Argumente für das Gespräch</h3><ul>{arg}</ul>
@@ -1482,7 +1645,16 @@ class Fenster(QMainWindow):
         self.einstellungen.setValue("geometrie", self.saveGeometry())
         if self.lauf is not None and self.lauf.isRunning():
             self.lauf.stoppen()
-            self.lauf.wait(5000)
+            self.statusBar().showMessage("Beende die laufende Prüfung …")
+            QApplication.processEvents()
+            if not self.lauf.wait(20000):
+                # Haengende Abrufe: Zerstoert Qt ein noch laufendes QThread-Objekt, bricht es
+                # das Programm mit einem Speicherabzug ab. Fertige Ergebnisse stehen
+                # laengst in der Datenbank (Commit je Firma), verloren gehen nur die
+                # Firmen, die gerade in Arbeit waren.
+                self.einstellungen.sync()
+                self.statusbuch.close()
+                os._exit(0)
         self.statusbuch.close()
         super().closeEvent(event)
 
@@ -1504,7 +1676,7 @@ QHeaderView::section {{
     background: {PANEL2}; color: {MUTED}; border: none;
     border-bottom: 1px solid {LINE}; padding: 7px 9px; font-size: 12px;
 }}
-QTextBrowser, QPlainTextEdit, QLineEdit, QComboBox, QDateEdit {{
+QTextBrowser, QPlainTextEdit, QLineEdit, QComboBox, QDateEdit, QSpinBox {{
     background: {PANEL2}; border: 1px solid {LINE}; border-radius: 7px; padding: 5px 8px;
 }}
 QComboBox QAbstractItemView {{ background: {PANEL2}; selection-background-color: #24344a; }}
@@ -1541,7 +1713,34 @@ QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}
 """
 
 
+def gc_im_hauptthread(app: QApplication) -> QTimer:
+    """Pythons zyklische Speicherbereinigung nur noch aus dem Hauptthread laufen lassen.
+
+    Automatisch laeuft sie in dem Thread, der gerade Objekte anlegt - bei uns also
+    im Pruef-Thread. Fallen dort Qt-Objekte aus einem Referenzzyklus, loescht
+    Shiboken sie nachtraeglich im Hauptthread ein zweites Mal und stuerzt ab. Jeder
+    PySide-Dialog mit verbundenen Signalen bildet solche Zyklen.
+
+    Die junge Generation wird oft, die vollstaendige selten bereinigt.
+    """
+    gc.disable()
+    zaehler = {"n": 0}
+
+    def tick() -> None:
+        zaehler["n"] += 1
+        gc.collect(2 if zaehler["n"] % 30 == 0 else 1)
+
+    uhr = QTimer(app)
+    uhr.setInterval(2000)
+    uhr.timeout.connect(tick)
+    uhr.start()
+    return uhr
+
+
 def main(argv: list[str] | None = None) -> int:
+    # Bei einem Absturz die Python-Spur ins Terminal schreiben. Ohne das bleibt von einem
+    # Speicherzugriffsfehler nur "Speicherabzug geschrieben" - kein Hinweis, wo.
+    faulthandler.enable()
     p = argparse.ArgumentParser(prog="gui.py", description="site-audit mit grafischer Oberflaeche")
     p.add_argument("csv", nargs="?", type=Path, help="Leads-CSV, die beim Start geladen wird")
     p.add_argument(
@@ -1564,9 +1763,12 @@ def main(argv: list[str] | None = None) -> int:
     app.setStyle("Fusion")
     app.setStyleSheet(STYLE)
 
+    uhr = gc_im_hauptthread(app)  # Referenz halten, sonst raeumt Python den Timer ab
     fenster = Fenster(args.csv, args.cache)
     fenster.show()
-    return app.exec()
+    ergebnis = app.exec()
+    uhr.stop()
+    return ergebnis
 
 
 if __name__ == "__main__":

@@ -44,6 +44,12 @@ def app():
 
 
 def _result(name: str, url: str, score: float, ort="Daun", branche="Handwerk", status="ok") -> Result:
+    if status != "ok":
+        # Nicht erreichbar: kein Score, so wie audit_lead() sie jetzt liefert
+        return audit.unbewertet(
+            audit.Lead(name, url, ort, branche), f"https://{url}/", audit.STATUS_UNERREICHBAR, "dns",
+            "[Erreichbarkeit] Seite nicht erreichbar: Name or service not known", "2026-10-08T10:00:00",
+        )
     return Result(
         name=name, url=url, ort=ort, branche=branche, final_url=f"https://{url}/",
         status=status, score=score, cms="Jimdo" if score > 50 else "", argumente=[f"Argument {name}"],
@@ -63,7 +69,7 @@ def fenster(app, tmp_path, einstellungen):
         _result("Alpha", "alpha.de", 80.0),
         _result("Beta", "beta.de", 45.0, ort="Gerolstein", branche="Gastronomie"),
         _result("Gamma", "gamma.de", 10.0),
-        _result("Delta", "delta.de", 100.0, status="fehler"),
+        _result("Delta", "delta.de", 0.0, status="nicht erreichbar"),
     ):
         cache.put(r, False)
     cache.close()
@@ -137,7 +143,14 @@ def test_leads_werden_aus_der_csv_gelesen(fenster):
 
 def test_schlechteste_seite_steht_oben(fenster):
     erste = fenster.model.zeile(0)
-    assert erste.result.score == 100.0
+    assert erste.result.score == 80.0
+
+
+def test_nicht_erreichbare_seite_steht_ganz_unten(fenster):
+    """Auch wenn sie frueher mit Score 100 ganz oben gestanden haette."""
+    letzte = fenster.model.zeile(fenster.model.rowCount() - 1)
+    assert letzte.result.status == "nicht erreichbar"
+    assert letzte.result.score is None
 
 
 def test_erste_zeile_ist_vorausgewaehlt(fenster):
@@ -213,7 +226,13 @@ def test_suchmenue_ohne_auswahl_ist_leer(app, tmp_path, einstellungen):
 
 
 def test_score_wird_ohne_nachkommastelle_angezeigt(fenster):
-    assert fenster.model.data(fenster.model.index(0, gui.S_SCORE)) == "100"
+    assert fenster.model.data(fenster.model.index(0, gui.S_SCORE)) == "80"
+
+
+def test_nicht_erreichbare_seite_zeigt_strich_statt_score(fenster):
+    zeile = fenster.model.rowCount() - 1
+    assert fenster.model.data(fenster.model.index(zeile, gui.S_SCORE)) == "–"
+    assert fenster.model.data(fenster.model.index(zeile, gui.S_TECHNIK)) == "nicht erreichbar"
 
 
 # --- Filter ----------------------------------------------------------------
@@ -231,7 +250,32 @@ def test_filter_nach_branche(fenster):
 
 def test_filter_nach_mindestscore(fenster):
     fenster.f_min.setCurrentIndex(fenster.f_min.findData(50))
-    assert fenster.proxy.rowCount() == 2, "Alpha mit 80 und Delta mit 100"
+    assert fenster.proxy.rowCount() == 1, "nur Alpha mit 80 - Delta hat keinen Score"
+
+
+def test_nicht_erreichbare_tauchen_im_scorefilter_nicht_auf(fenster):
+    """Ab "Score ab X" mit X > 0 fallen Seiten ohne Score heraus."""
+    delta = lambda: [  # noqa: E731
+        fenster.proxy.index(r, gui.S_FIRMA).data() for r in range(fenster.proxy.rowCount())
+    ]
+    assert "Delta" in delta(), "ohne Scorefilter bleibt sie auffindbar"
+    for stufe in (35, 50, 60, 75):
+        fenster.f_min.setCurrentIndex(fenster.f_min.findData(stufe))
+        assert "Delta" not in delta(), f"ab {stufe} darf sie nicht mehr erscheinen"
+
+
+def test_nicht_erreichbare_stehen_in_jeder_sortierung_unten(fenster):
+    """Auf- und absteigend, nach Score und nach Name - immer ans Ende."""
+    for spalte in (gui.S_SCORE, gui.S_FIRMA):
+        for richtung in (gui.Qt.SortOrder.AscendingOrder, gui.Qt.SortOrder.DescendingOrder):
+            fenster.tabelle.sortByColumn(spalte, richtung)
+            letzte = fenster.proxy.rowCount() - 1
+            assert fenster.proxy.index(letzte, gui.S_FIRMA).data() == "Delta", (spalte, richtung)
+
+
+def test_score_farbe_bei_fehlendem_score_ist_neutral():
+    assert gui.score_farbe(None, "nicht erreichbar") == gui.MUTED
+    assert gui.score_farbe(95, "nicht erreichbar") == gui.MUTED, "ohne Status ok keine Ampel"
 
 
 def test_suche_findet_in_befunden(fenster):
@@ -249,7 +293,7 @@ def test_suche_findet_in_notizen(fenster):
 def test_filter_lassen_sich_kombinieren(fenster):
     fenster.f_ort.setCurrentIndex(fenster.f_ort.findData("Daun"))
     fenster.f_min.setCurrentIndex(fenster.f_min.findData(50))
-    assert fenster.proxy.rowCount() == 2
+    assert fenster.proxy.rowCount() == 1, "Alpha - Delta hat keinen Score"
 
 
 def test_filter_leeren_zeigt_wieder_alles(fenster):
@@ -492,3 +536,269 @@ def test_score_farbe_folgt_den_schwellen():
     assert gui.score_farbe(45, "ok") == gui.WARN
     assert gui.score_farbe(10, "ok") == gui.OK
     assert gui.score_farbe(95, "gesperrt") == gui.MUTED, "gesperrt wird nicht bewertet"
+
+
+# --- Parallelitaet ---------------------------------------------------------
+
+
+def test_parallelitaet_startet_mit_der_vorgabe(fenster):
+    assert fenster.sp_parallel.value() == audit.MAX_PARALLEL
+
+
+def test_parallelitaet_kommt_aus_dem_eingabefeld(fenster):
+    fenster.sp_parallel.setValue(12)
+    assert fenster.lauf_argumente().concurrency == 12
+
+
+def test_lauf_argumente_haben_alle_felder_fuer_audit_run(fenster):
+    args = fenster.lauf_argumente()
+    for feld in ("pagespeed", "refresh", "cache", "no_cache", "max_age", "concurrency",
+                 "host_interval", "assets", "timeout", "verzeichnis"):
+        assert hasattr(args, feld), feld
+    assert args.host_interval == audit.HOST_INTERVAL, "der Takt pro Host bleibt unberuehrt"
+    assert args.assets == audit.DEFAULT_ASSETS
+
+
+def test_parallelitaet_wird_gemerkt(app, tmp_path, einstellungen):
+    erst = gui.Fenster(None, tmp_path / "db.sqlite", einstellungen)
+    erst.sp_parallel.setValue(17)
+    erst.statusbuch.close()
+    wieder = gui.Fenster(None, tmp_path / "db.sqlite", einstellungen)
+    assert wieder.sp_parallel.value() == 17
+    wieder.statusbuch.close()
+
+
+def test_parallelitaet_ist_begrenzt(fenster):
+    fenster.sp_parallel.setValue(500)
+    assert fenster.sp_parallel.value() == 60
+    fenster.sp_parallel.setValue(-3)
+    assert fenster.sp_parallel.value() == 1
+
+
+# --- Suchdialog: Kreise, Hintergrundarbeit, Absturz beim Schliessen ----------------
+
+
+import threading as _threading  # noqa: E402
+import time as _time  # noqa: E402
+
+from PySide6.QtWidgets import QMessageBox as _QMessageBox  # noqa: E402
+
+
+def _warte(app, bedingung, sekunden=3.0):
+    ende = _time.monotonic() + sekunden
+    while _time.monotonic() < ende:
+        app.processEvents()
+        if bedingung():
+            return True
+        _time.sleep(0.01)
+    return False
+
+
+@pytest.fixture
+def dialog(app, monkeypatch):
+    """SuchDialog mit abgefangener Hintergrundarbeit: nichts geht ins Netz."""
+    aufgerufen = []
+    monkeypatch.setattr(gui, "im_hintergrund", lambda bote, auftrag, aufgabe, *a: aufgerufen.append((auftrag, aufgabe, a)))
+    d = gui.SuchDialog()
+    d.aufgerufen = aufgerufen
+    yield d
+    d._uhr.stop()
+    d.deleteLater()
+
+
+def _land(dialog, iso):
+    dialog.cb_land.setCurrentIndex(dialog.cb_land.findData(iso))
+
+
+def test_kreise_kommen_sofort_aus_der_mitgelieferten_liste(dialog, monkeypatch):
+    monkeypatch.setattr(gui.finden, "kreise_lokal", lambda iso: [("Ahrweiler", "07131"), ("Vulkaneifel", "07233")])
+    _land(dialog, "DE-RP")
+    assert dialog.aufgerufen == [], "kein Netz, kein Hintergrund-Thread, kein 'Lade Kreise'"
+    assert [dialog.cb_kreis.itemText(i) for i in range(dialog.cb_kreis.count())] == [
+        "ganzes Bundesland", "Ahrweiler", "Vulkaneifel"]
+    assert dialog.cb_kreis.isEnabled()
+    assert dialog.btn_suchen.isEnabled()
+    assert "2 Kreise" in dialog.lbl_stand.text()
+
+
+def test_kreis_wahl_ergibt_das_gebiet(dialog, monkeypatch):
+    monkeypatch.setattr(gui.finden, "kreise_lokal", lambda iso: [("Vulkaneifel", "07233")])
+    _land(dialog, "DE-RP")
+    dialog.cb_kreis.setCurrentIndex(1)
+    assert dialog.gebiet().filter == gui.finden.kreis_filter("07233")
+
+
+def test_stadtstaat_hat_keine_kreisauswahl(dialog):
+    _land(dialog, "DE-BE")
+    assert not dialog.cb_kreis.isEnabled()
+    assert "Stadtstaat" in dialog.lbl_stand.text()
+    assert dialog.btn_suchen.isEnabled()
+    assert dialog.aufgerufen == []
+
+
+def test_fehlende_liste_startet_abfrage_ohne_die_suche_zu_sperren(dialog, monkeypatch):
+    monkeypatch.setattr(gui.finden, "kreise_lokal", lambda iso: None)
+    _land(dialog, "DE-RP")
+    assert len(dialog.aufgerufen) == 1
+    assert dialog.btn_suchen.isEnabled(), "das ganze Bundesland bleibt waehrenddessen suchbar"
+    assert "Lade Kreise" in dialog.lbl_stand.text()
+
+
+def test_kreisfehler_ist_kein_dialog_und_laesst_die_suche_zu(dialog, monkeypatch):
+    monkeypatch.setattr(gui.finden, "kreise_lokal", lambda iso: None)
+    monkeypatch.setattr(_QMessageBox, "warning", lambda *a, **k: pytest.fail("kein Fehlerdialog fuer die Kreisliste"))
+    _land(dialog, "DE-RP")
+    auftrag = dialog.aufgerufen[0][0]
+    dialog._antwort_fehler(auftrag, "Overpass antwortet nicht")
+    assert dialog.btn_suchen.isEnabled()
+    assert "ganze Bundesland" in dialog.lbl_stand.text()
+
+
+def test_veraltete_antwort_wird_verworfen(dialog, monkeypatch):
+    """Land gewechselt, bevor die Kreise des ersten ankamen: sie duerfen nicht
+    im Feld des zweiten landen."""
+    monkeypatch.setattr(gui.finden, "kreise_lokal", lambda iso: None)
+    _land(dialog, "DE-RP")
+    alt = dialog.aufgerufen[0][0]
+    _land(dialog, "DE-HE")
+    dialog._antwort(alt, [("Fremder Kreis", "07999")])
+    assert dialog.cb_kreis.count() == 1, "nur 'ganzes Bundesland'"
+
+
+def test_aktuelle_antwort_wird_uebernommen(dialog, monkeypatch):
+    monkeypatch.setattr(gui.finden, "kreise_lokal", lambda iso: None)
+    _land(dialog, "DE-RP")
+    dialog._antwort(dialog.aufgerufen[0][0], [("Ahrweiler", "07131")])
+    assert dialog.cb_kreis.count() == 2
+
+
+def test_suchfehler_zeigt_dialog_und_gibt_den_knopf_frei(dialog, monkeypatch):
+    gezeigt = []
+    monkeypatch.setattr(_QMessageBox, "warning", lambda *a, **k: gezeigt.append(a[2]))
+    dialog.cb_land.setCurrentIndex(dialog.cb_land.findData("DE-NI"))
+    dialog.suchen()
+    dialog._antwort_fehler(dialog._auftrag, "Dienst antwortet nicht")
+    assert gezeigt and "Dienst antwortet nicht" in gezeigt[0]
+    assert dialog.btn_suchen.isEnabled()
+
+
+def test_suche_meldet_firmen_und_schliesst_den_dialog(dialog):
+    dialog.cb_land.setCurrentIndex(dialog.cb_land.findData("DE-NI"))
+    dialog.suchen()
+    firmen = [gui.finden.Firma("A", "a.de")]
+    dialog._antwort(dialog._auftrag, firmen)
+    assert dialog.firmen == firmen
+    assert dialog.result() == gui.QDialog.DialogCode.Accepted
+
+
+def test_zeitanzeige_zaehlt_und_warnt_nach_einer_minute(dialog):
+    dialog._basis_text, dialog._seit = "Suche", _time.monotonic() - 12
+    dialog._tick()
+    assert "12 s" in dialog.lbl_stand.text() or "13 s" in dialog.lbl_stand.text()
+    assert "ausgelastet" not in dialog.lbl_stand.text()
+    dialog._seit = _time.monotonic() - 75
+    dialog._tick()
+    assert "ausgelastet" in dialog.lbl_stand.text() and "Abbrechen" in dialog.lbl_stand.text()
+
+
+# --- Hintergrund-Thread ------------------------------------------------------------
+
+
+def test_hintergrund_liefert_ergebnis_ueber_das_signal(app):
+    bote, erhalten = gui._Bote(), []
+    bote.fertig.connect(lambda a, e: erhalten.append((a, e)))
+    gui.im_hintergrund(bote, 7, lambda x: x * 2, 21)
+    assert _warte(app, lambda: erhalten)
+    assert erhalten == [(7, 42)]
+
+
+def test_hintergrund_meldet_fehler_ueber_das_signal(app):
+    bote, erhalten = gui._Bote(), []
+    bote.fehlgeschlagen.connect(lambda a, t: erhalten.append((a, t)))
+
+    def kaputt():
+        raise RuntimeError("Dienst weg")
+
+    gui.im_hintergrund(bote, 3, kaputt)
+    assert _warte(app, lambda: erhalten)
+    assert erhalten == [(3, "Dienst weg")]
+
+
+def test_hintergrund_ist_ein_daemon_thread_und_kein_qthread(app, monkeypatch):
+    """Der Absturz ("QThread: Destroyed while thread is still running") entstand,
+    weil Qt ein noch laufendes QThread-Objekt beim Schliessen zerstoert hat."""
+    erzeugt = []
+    echt = _threading.Thread
+
+    def merken(*a, **k):
+        erzeugt.append(k)
+        return echt(*a, **k)
+
+    monkeypatch.setattr(gui.threading, "Thread", merken)
+    gui.im_hintergrund(gui._Bote(), 1, lambda: None)
+    assert erzeugt and erzeugt[0].get("daemon") is True
+    assert not hasattr(gui, "SuchThread"), "kein QThread fuer die Suche mehr"
+
+
+def test_dialog_schliessen_waehrend_die_abfrage_haengt_stuerzt_nicht_ab(app):
+    """Genau der Absturz aus der Praxis: Abfrage laeuft, Dialog wird geschlossen und
+    zerstoert, danach liefert die Abfrage ihr Ergebnis."""
+    freigabe = _threading.Event()
+    gestartet = _threading.Event()
+
+    def haengt():
+        gestartet.set()
+        freigabe.wait(5)
+        return ["zu spaet"]
+
+    d = gui.SuchDialog()
+    gui.im_hintergrund(d._bote, d._auftrag, haengt)
+    assert gestartet.wait(2)
+    d.reject()
+    d.deleteLater()
+    for _ in range(5):
+        app.processEvents()
+    freigabe.set()       # die Abfrage liefert jetzt - an einen zerstoerten Dialog
+    _time.sleep(0.2)
+    for _ in range(5):
+        app.processEvents()
+    assert True, "kein Abbruch, keine Ausnahme"
+
+
+# --- Fenster schliessen waehrend ein Lauf haengt --------------------------------------
+
+
+class _LaufAttrappe:
+    def __init__(self, beendet):
+        self._beendet = beendet
+        self.gestoppt = False
+
+    def isRunning(self):
+        return True
+
+    def stoppen(self):
+        self.gestoppt = True
+
+    def wait(self, ms):
+        return self._beendet
+
+
+def test_schliessen_mit_haengendem_lauf_beendet_ohne_qt_absturz(fenster, monkeypatch):
+    from PySide6.QtGui import QCloseEvent
+
+    beendet = []
+    monkeypatch.setattr(gui.os, "_exit", lambda code: beendet.append(code))
+    fenster.lauf = _LaufAttrappe(beendet=False)
+    fenster.closeEvent(QCloseEvent())
+    assert fenster.lauf.gestoppt
+    assert beendet == [0], "kontrolliert raus statt Speicherabzug"
+    fenster.lauf = None
+
+
+def test_schliessen_mit_sauber_endendem_lauf_ist_normal(fenster, monkeypatch):
+    from PySide6.QtGui import QCloseEvent
+
+    monkeypatch.setattr(gui.os, "_exit", lambda code: pytest.fail("kein harter Ausstieg noetig"))
+    fenster.lauf = _LaufAttrappe(beendet=True)
+    fenster.closeEvent(QCloseEvent())
+    fenster.lauf = None

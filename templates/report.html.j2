@@ -131,8 +131,8 @@
     <label for="f-status">Status</label>
     <select id="f-status"><option value="">alle</option>
       <option value="ok">geprueft</option>
-      <option value="fehler">nicht erreichbar</option>
-      <option value="gesperrt">gesperrt</option>
+      <option value="nicht erreichbar">nicht erreichbar</option>
+      <option value="pruefung fehlgeschlagen">Pruefung fehlgeschlagen</option>
     </select>
   </div>
   <div>
@@ -184,7 +184,7 @@
   var sort = { key: "score", dir: -1, type: "num" };
 
   function cls(score, status) {
-    if (status === "gesperrt") return "none";
+    if (score == null || status !== "ok") return "none";
     if (score >= 60) return "bad";
     if (score >= 35) return "warn";
     return "ok";
@@ -209,13 +209,15 @@
       var tr = el("tr", { class: "main", tabindex: "0" });
 
       var tdScore = el("td");
-      tdScore.appendChild(el("div", { class: "score " + k }, r.score.toFixed(0)));
-      var meter = el("div", { class: "meter" });
-      var fill = el("i");
-      fill.style.width = Math.max(2, Math.min(100, r.score)) + "%";
-      fill.style.background = colorOf(k);
-      meter.appendChild(fill);
-      tdScore.appendChild(meter);
+      tdScore.appendChild(el("div", { class: "score " + k }, r.score == null ? "\u2013" : r.score.toFixed(0)));
+      if (r.score != null) {
+        var meter = el("div", { class: "meter" });
+        var fill = el("i");
+        fill.style.width = Math.max(2, Math.min(100, r.score)) + "%";
+        fill.style.background = colorOf(k);
+        meter.appendChild(fill);
+        tdScore.appendChild(meter);
+      }
       tr.appendChild(tdScore);
 
       var tdName = el("td");
@@ -231,7 +233,8 @@
       tr.appendChild(el("td", { class: "col-opt" }, r.cms || "–"));
 
       var tdStatus = el("td");
-      tdStatus.appendChild(el("span", { class: "tag st-" + r.status }, r.status === "ok" ? "geprueft" : r.status === "fehler" ? "nicht erreichbar" : "gesperrt"));
+      var stKlasse = r.status === "ok" ? "st-ok" : "st-fehler";
+      tdStatus.appendChild(el("span", { class: "tag " + stKlasse }, r.status === "ok" ? "geprueft" : r.status));
       if (r.pagespeed != null) { tdStatus.appendChild(el("div", { class: "sub" }, "PSI " + r.pagespeed)); }
       tr.appendChild(tdStatus);
 
@@ -282,7 +285,8 @@
       if (ort && r.ort !== ort) { return false; }
       if (br && r.branche !== br) { return false; }
       if (st && r.status !== st) { return false; }
-      if (r.score < min) { return false; }
+      // Nicht bewertete Seiten haben keinen Score: ab "Score ab X" (X > 0) fallen sie raus
+      if (min > 0 && (r.score == null || r.score < min)) { return false; }
       if (q) {
         var hay = [r.name, r.url, r.ort, r.branche, r.cms]
           .concat(r.argumente || [], r.befunde || []).join(" ").toLowerCase();
@@ -293,7 +297,11 @@
 
     list.sort(function (a, b) {
       var x = a[sort.key], y = b[sort.key];
-      if (sort.type === "num") { return (x - y) * sort.dir; }
+      if (sort.type === "num") {
+        // Ohne Score immer ans Ende, egal in welche Richtung sortiert wird
+        if (x == null || y == null) { return x == null ? (y == null ? 0 : 1) : -1; }
+        return (x - y) * sort.dir;
+      }
       x = (x || "").toString().toLowerCase();
       y = (y || "").toString().toLowerCase();
       return x < y ? -sort.dir : x > y ? sort.dir : 0;

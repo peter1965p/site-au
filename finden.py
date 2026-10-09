@@ -112,61 +112,164 @@ def land_filter(iso: str) -> str:
     return f'area["ISO3166-2"="{iso}"]["admin_level"="4"]'
 
 
-def kreis_filter(regionalschluessel: str) -> str:
-    """Overpass-Gebiet eines Kreises ueber seinen Regionalschluessel.
+def kreis_filter(schluessel: str) -> str:
+    """Overpass-Gebiet eines Kreises ueber seinen Kreisschluessel (5 Stellen).
 
-    Stabiler als der Name, der je nach Quelle "Landkreis Neuwied" oder nur
-    "Neuwied" lautet, und stabiler als Relations-Ids.
+    Greift auf zwei Tags zu, weil OpenStreetMap nicht jeden Kreis mit dem
+    Regionalschluessel fuehrt: Landkreis Greiz (16076) traegt nur den amtlichen
+    Gemeindeschluessel. Ohne den zweiten Zweig liefert eine Suche dort nichts -
+    stumm und ohne Fehlermeldung. Das Praefix trifft zugleich die Gemeinden im
+    Kreis, die ohnehin innerhalb seiner Flaeche liegen.
     """
-    return 'area["de:regionalschluessel"~"^%s"]' % regionalschluessel
+    return (
+        '(area["de:regionalschluessel"~"^%s"];'
+        'area["de:amtlicher_gemeindeschluessel"~"^%s"];)' % (schluessel, schluessel)
+    )
 
 
-# Zwischenspeicher fuer die Kreisliste je Bundesland. Die aendert sich
-# praktisch nie, aber jede Abfrage belastet einen gespendeten Dienst.
+# Was OpenStreetMap als Kreis fuehrt, aber keiner ist.
+KEIN_KREIS = {
+    "06415": "Hanau - Stadt mit Sonderstatus im Main-Kinzig-Kreis. Der Schluessel stammt aus "
+             "der Zeit, als sie kreisfrei war.",
+}
+
+
+def kreis_schluessel(tags: dict) -> str:
+    """Fuenfstelliger Kreisschluessel aus Regionalschluessel oder amtlichem Gemeindeschluessel."""
+    wert = (tags.get("de:regionalschluessel") or tags.get("de:amtlicher_gemeindeschluessel") or "").strip()
+    return wert[:5] if len(wert) >= 5 and wert[:5].isdigit() else ""
+
+
+# Die Kreislisten ruecken nur bei Gebietsreformen nach. Deshalb liegt eine
+# mitgelieferte Fassung im Projekt (kreise_de.json), die ohne Netz auskommt.
+# Der lokale Zwischenspeicher (.kreise.json) hat Vorrang, falls jemand ihn per
+# Aktualisierung erneuert hat. Erst wenn beides fehlt, wird Overpass gefragt.
+KREISE_DATEI = Path(__file__).resolve().parent / "kreise_de.json"
 KREIS_CACHE = Path(__file__).resolve().parent / ".kreise.json"
 
 
-def kreise(iso: str, erzwingen: bool = False) -> list[tuple[str, str]]:
+def _lies_kreise(pfad: Path, iso: str) -> list[tuple[str, str]] | None:
+    import json
+
+    try:
+        daten = json.loads(pfad.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    eintrag = daten.get(iso)
+    if not isinstance(eintrag, list) or not eintrag:
+        return None
+    ergebnis: list[tuple[str, str]] = []
+    gesehen: set[str] = set()
+    for n, r in eintrag:
+        schluessel = str(r).strip()[:5]  # Kreisschluessel, auch aus aelteren 12-stelligen Eintraegen
+        if schluessel in gesehen or schluessel in KEIN_KREIS:
+            continue
+        gesehen.add(schluessel)
+        ergebnis.append((str(n), schluessel))
+    return ergebnis or None
+
+
+# Stadtstaaten ohne Kreisebene: das Land ist zugleich die Stadt.
+KEINE_KREISE = frozenset({"DE-BE", "DE-HH"})
+
+
+def kreise_lokal(iso: str) -> list[tuple[str, str]] | None:
+    """Kreise eines Bundeslands ohne Netzzugriff, oder None.
+
+    Fuer Berlin und Hamburg eine leere Liste - die gibt es dort nicht, und eine
+    Abfrage im Netz wuerde nie etwas finden.
+    """
+    if iso in KEINE_KREISE:
+        return []
+    return _lies_kreise(KREIS_CACHE, iso) or _lies_kreise(KREISE_DATEI, iso)
+
+
+def kreise(iso: str, erzwingen: bool = False, max_sekunden: float | None = 60.0) -> list[tuple[str, str]]:
     """Alle Kreise und kreisfreien Staedte eines Bundeslands.
 
     Rueckgabe: Liste aus (Name, Regionalschluessel), alphabetisch sortiert.
+    Bei Berlin und Hamburg ist sie leer: dort gibt es keine Kreisebene, das
+    Bundesland ist zugleich die Stadt.
     """
     import json
 
-    bestand: dict[str, list] = {}
-    if KREIS_CACHE.exists() and not erzwingen:
-        try:
-            bestand = json.loads(KREIS_CACHE.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
-            bestand = {}
-    if iso in bestand and not erzwingen:
-        return [(n, str(r)) for n, r in bestand[iso]]
+    if not erzwingen:
+        lokal = kreise_lokal(iso)
+        if lokal is not None:
+            return lokal
 
     praefix = RS_PRAEFIX[iso]
+    # Beide Schluessel-Tags, siehe kreis_filter(): manche Kreise tragen nur den
+    # amtlichen Gemeindeschluessel und waeren sonst unsichtbar.
     query = (
-        "[out:json][timeout:180];\n"
-        'rel["de:regionalschluessel"~"^%s"]["admin_level"="6"]'
-        '["boundary"="administrative"];\n'
-        "out tags;" % praefix
+        "[out:json][timeout:60];\n"
+        "(\n"
+        '  rel["de:regionalschluessel"~"^%s"]["admin_level"="6"]["boundary"="administrative"];\n'
+        '  rel["de:amtlicher_gemeindeschluessel"~"^%s"]["admin_level"="6"]["boundary"="administrative"];\n'
+        ");\n"
+        "out tags;" % (praefix, praefix)
     )
     gefunden: list[tuple[str, str]] = []
     gesehen: set[str] = set()
-    for el in abfragen(query):
+    for el in abfragen(query, leise=True, max_sekunden=max_sekunden):
         tags = el.get("tags", {}) or {}
         name = (tags.get("name") or "").strip()
-        rs = (tags.get("de:regionalschluessel") or "").strip()
-        if not name or not rs or rs in gesehen:
+        schluessel = kreis_schluessel(tags)
+        if not name or not schluessel or schluessel in gesehen or schluessel in KEIN_KREIS:
             continue
-        gesehen.add(rs)
-        gefunden.append((name, rs))
+        gesehen.add(schluessel)
+        gefunden.append((name, schluessel))
     gefunden.sort(key=lambda x: x[0].lower())
 
+    try:
+        bestand = json.loads(KREIS_CACHE.read_text(encoding="utf-8")) if KREIS_CACHE.exists() else {}
+    except (OSError, ValueError):
+        bestand = {}
     bestand[iso] = [[n, r] for n, r in gefunden]
     try:
         KREIS_CACHE.write_text(json.dumps(bestand, ensure_ascii=False, indent=1), encoding="utf-8")
     except OSError:
         pass
     return gefunden
+
+
+def kreise_erneuern(ziel: Path | None = None, pause: float = 4.0, melde=None) -> dict:
+    """Alle Kreislisten neu aus OpenStreetMap ziehen und als kreise_de.json ablegen.
+
+    Noetig nur nach einer Gebietsreform (zuletzt etwa Zusammenlegungen von
+    Landkreisen). Eine Abfrage je Bundesland mit Pause dazwischen: Overpass ist
+    ein gespendeter Dienst, 16 Abfragen hintereinander ohne Luft waeren
+    unhoeflich. Wird ein Land nicht geladen, bleibt dessen bisheriger Eintrag
+    stehen - die Datei wird nie schlechter als sie war.
+    """
+    import datetime
+    import json
+
+    ziel = ziel or KREISE_DATEI
+    try:
+        daten = json.loads(ziel.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        daten = {}
+    fehlgeschlagen: list[str] = []
+    for iso in sorted(RS_PRAEFIX):
+        if iso in KEINE_KREISE:
+            daten[iso] = []
+            continue
+        try:
+            daten[iso] = [[n, r] for n, r in kreise(iso, erzwingen=True, max_sekunden=180.0)]
+        except Exception as exc:  # noqa: BLE001 - ein Land darf die uebrigen nicht verhindern
+            fehlgeschlagen.append(iso)
+            if melde:
+                melde(f"{iso}: {str(exc).splitlines()[0]}")
+            continue
+        if melde:
+            melde(f"{iso} {BUNDESLAENDER[iso]}: {len(daten[iso])} Kreise")
+        time.sleep(pause)
+    if not fehlgeschlagen:
+        daten["_stand"] = datetime.date.today().isoformat()
+    ziel.write_text(json.dumps(daten, ensure_ascii=False, indent=1), encoding="utf-8")
+    daten["_fehlgeschlagen"] = fehlgeschlagen
+    return daten
 
 
 # Peters Einzugsgebiet als Schnellwahl. Die Regionalschluessel sind stabiler
@@ -241,16 +344,42 @@ def bauen(region: Region, branchen: list[str], nur_mit_website: bool = True) -> 
     )
 
 
-def abfragen(query: str, leise: bool = False) -> list[dict]:
+def abfragen(query: str, leise: bool = False, max_sekunden: float | None = None) -> list[dict]:
     """Overpass fragen, mit Spiegeln und Geduld.
 
     Der Dienst antwortet unter Last mit 429 oder 504. Das ist kein Fehler,
     sondern eine Bitte zu warten - wer sofort nachlegt, wird haerter gedrosselt.
     Deshalb wird vorab der Status gelesen und die genannte Wartezeit
     abgesessen, statt blind zu versuchen.
+
+    `max_sekunden` ist ein Zeitbudget fuer alles zusammen (Warten, Abfragen,
+    Wiederholungen). Ohne Budget kann der Aufruf bei Ausfaellen weit ueber
+    zwanzig Minuten dauern - fuer Dialoge, in denen jemand wartet, ist das
+    untragbar. Ist das Budget aufgebraucht, gibt es einen Fehler statt Warten.
     """
+    frist = None if max_sekunden is None else time.monotonic() + max_sekunden
+
+    def uebrig() -> float | None:
+        return None if frist is None else frist - time.monotonic()
+
+    meldungen: dict[str, str] = {}
+
+    def fehler(grund: str) -> RuntimeError:
+        # Alle Server nennen, nicht nur den zuletzt befragten: oft ist der
+        # Hauptserver ausgelastet und ein Spiegel tot, und nur die Meldung des
+        # toten Spiegels zu zeigen fuehrt in die Irre.
+        details = " · ".join(f"{h}: {m}" for h, m in meldungen.items()) or "keine Antwort"
+        return RuntimeError(
+            f"{grund}\n\nMeldungen: {details}\n\n"
+            "Overpass/OpenStreetMap ist ein gespendeter Dienst mit engen Grenzen. "
+            "In ein paar Minuten noch einmal versuchen, oder ein kleineres Gebiet waehlen."
+        )
+
     rest = wartezeit()
     if rest > 0:
+        if uebrig() is not None and rest + 1 > uebrig():
+            meldungen["overpass-api.de"] = f"laesst erst in {rest} s wieder eine Abfrage zu"
+            raise fehler("Die Firmendatenbank ist gerade ausgelastet.")
         if not leise:
             console.print(
                 f"[yellow]Overpass laesst gerade keine weitere Abfrage zu. "
@@ -258,48 +387,45 @@ def abfragen(query: str, leise: bool = False) -> list[dict]:
             )
         time.sleep(min(rest, 180) + 1)
 
-    letzter = ""
     for versuch in range(1, VERSUCHE + 1):
         for endpunkt in ENDPUNKTE:
             host = urlparse(endpunkt).hostname or endpunkt
+            if uebrig() is not None and uebrig() <= 2:
+                raise fehler("Die Firmendatenbank antwortet nicht in der vorgesehenen Zeit.")
             try:
                 antwort = httpx.post(
                     endpunkt,
                     data={"data": query},
-                    timeout=240.0,
+                    timeout=240.0 if frist is None else max(5.0, min(240.0, uebrig())),
                     headers={"User-Agent": USER_AGENT},
                 )
             except Exception as exc:  # noqa: BLE001
-                letzter = f"{host}: {type(exc).__name__}"
+                meldungen[host] = type(exc).__name__
                 continue
             if antwort.status_code == 200:
                 try:
                     daten = antwort.json()
                 except ValueError:
                     # Manche Spiegel liefern 200 mit einer HTML-Fehlerseite.
-                    letzter = f"{host}: Antwort ist kein JSON"
+                    meldungen[host] = "Antwort ist kein JSON"
                     continue
                 if "elements" not in daten:
-                    letzter = f"{host}: Antwort ohne Ergebnisfeld"
+                    meldungen[host] = "Antwort ohne Ergebnisfeld"
                     continue
                 return daten["elements"]
-            letzter = f"{host}: HTTP {antwort.status_code}"
-            if antwort.status_code not in (429, 503, 504):
-                continue
+            meldungen[host] = f"HTTP {antwort.status_code}"
         if versuch < VERSUCHE:
             pause = WARTEN * versuch
+            if uebrig() is not None and pause >= uebrig():
+                break
             if not leise:
                 console.print(
-                    f"[yellow]Overpass ist gerade ausgelastet ({letzter}). "
+                    f"[yellow]Overpass ist gerade ausgelastet "
+                    f"({' · '.join(f'{h}: {m}' for h, m in meldungen.items())}). "
                     f"Warte {pause:.0f}s und versuche es erneut …[/yellow]"
                 )
             time.sleep(pause)
-    raise RuntimeError(
-        "Die Firmendatenbank (Overpass/OpenStreetMap) antwortet gerade nicht.\n\n"
-        f"Letzte Meldung: {letzter}\n\n"
-        "Das ist ein gespendeter Dienst mit engen Grenzen. In ein paar Minuten "
-        "noch einmal versuchen, oder ein kleineres Gebiet waehlen."
-    )
+    raise fehler("Die Firmendatenbank antwortet gerade nicht.")
 
 
 MAIL_PREFIX = re.compile(r"^mailto:", re.IGNORECASE)
@@ -409,7 +535,12 @@ def main(argv: list[str] | None = None) -> int:
         epilog="Regionen: " + ", ".join(sorted(REGIONEN)) + "\nBranchen: " + ", ".join(BRANCHEN),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("--region", required=True, help="z. B. vulkaneifel")
+    p.add_argument("--region", help="z. B. vulkaneifel")
+    p.add_argument(
+        "--kreise-erneuern",
+        action="store_true",
+        help="Kreislisten aller Bundeslaender neu aus OpenStreetMap holen (selten noetig)",
+    )
     p.add_argument(
         "--branchen",
         default="beherbergung,gastronomie,handwerk",
@@ -418,6 +549,16 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out", type=Path, default=Path("leads.csv"), help="Ziel-CSV")
     p.add_argument("--anhaengen", action="store_true", help="an eine vorhandene CSV anhaengen")
     args = p.parse_args(argv)
+
+    if args.kreise_erneuern:
+        erg = kreise_erneuern(melde=console.print)
+        schlecht = erg.pop("_fehlgeschlagen")
+        console.print(f"[green]Geschrieben:[/green] {KREISE_DATEI}")
+        if schlecht:
+            console.print(f"[yellow]Nicht geladen, alter Stand bleibt: {', '.join(schlecht)}[/yellow]")
+        return 1 if schlecht else 0
+    if not args.region:
+        p.error("--region ist erforderlich (oder --kreise-erneuern)")
 
     branchen = [b.strip() for b in args.branchen.split(",") if b.strip()]
     region = REGIONEN.get(args.region)
