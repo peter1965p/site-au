@@ -2110,6 +2110,8 @@ def read_leads(path: Path) -> list[Lead]:
                     url=url,
                     ort=(row.get(cols.get("ort", ""), "") or "").strip(),
                     branche=(row.get(cols.get("branche", ""), "") or "").strip(),
+                    telefon=(row.get(cols.get("telefon", ""), "") or "").strip(),
+                    email=(row.get(cols.get("email", ""), "") or "").strip(),
                 )
             )
     return leads

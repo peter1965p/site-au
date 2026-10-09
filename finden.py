@@ -30,37 +30,160 @@ USER_AGENT = "site-audit/1.0 (+paeffgen-it.de)"
 
 # Overpass ist ein gespendeter Dienst mit engen Grenzen. Mehrere Spiegel,
 # grosszuegige Wartezeiten und nur eine Abfrage auf einmal.
+# Nur Spiegel, die auch wirklich antworten. private.coffee und osm.ch waren
+# beim Test dauerhaft defekt (HTTP 500 bzw. 200 ohne JSON) - ein kaputter
+# Spiegel ist schlimmer als keiner, weil eine unbrauchbare Antwort wie
+# "keine Treffer" aussieht.
 ENDPUNKTE = [
     "https://overpass-api.de/api/interpreter",
-    "https://overpass.private.coffee/api/interpreter",
-    "https://overpass.osm.ch/api/interpreter",
     "https://overpass.kumi.systems/api/interpreter",
 ]
 VERSUCHE = 3
-WARTEN = 20.0  # Sekunden nach einer Abfuhr, waechst mit jedem Versuch
+WARTEN = 25.0  # Sekunden nach einer Abfuhr, waechst mit jedem Versuch
+
+SLOT_RE = re.compile(r"Slot available after: .*?in (\d+) seconds", re.IGNORECASE)
+FREI_RE = re.compile(r"(\d+) slots? available now", re.IGNORECASE)
+
+
+def wartezeit() -> int:
+    """Wie lange der Hauptserver noch braucht, bis wieder eine Abfrage darf.
+
+    Overpass begrenzt pro IP auf zwei gleichzeitige Abfragen und meldet im
+    Status, wann der naechste Platz frei wird. Das abzufragen ist besser,
+    als blind nachzulegen - jeder Versuch zur Unzeit verlaengert die Sperre.
+    Rueckgabe in Sekunden, 0 wenn sofort moeglich.
+    """
+    try:
+        antwort = httpx.get(
+            "https://overpass-api.de/api/status", timeout=20.0, headers={"User-Agent": USER_AGENT}
+        )
+        if antwort.status_code != 200:
+            return 0
+        text = antwort.text
+        frei = FREI_RE.search(text)
+        if frei and int(frei.group(1)) > 0:
+            return 0
+        wartezeiten = [int(m) for m in SLOT_RE.findall(text)]
+        return min(wartezeiten) if wartezeiten else 0
+    except Exception:  # noqa: BLE001 - Status ist nur eine Hilfe, kein Muss
+        return 0
 
 
 @dataclass(frozen=True)
 class Region:
     titel: str
-    filter: str  # Overpass-Selektor fuer das Gebiet
+    filter: str  # vollstaendiger Overpass-Gebietsausdruck, z. B. area[...] oder area(id)
 
 
-# Peters Einzugsgebiet. Die Regionalschluessel sind stabiler als Namen, die
-# in OSM schon mal umbenannt oder unterschiedlich geschrieben werden.
+# Die 16 Bundeslaender ueber ihre ISO-Codes. admin_level=4 ist noetig, weil
+# sonst auch Regierungsbezirke und Stadtstaaten doppelt greifen.
+BUNDESLAENDER: dict[str, str] = {
+    "DE-BW": "Baden-Württemberg",
+    "DE-BY": "Bayern",
+    "DE-BE": "Berlin",
+    "DE-BB": "Brandenburg",
+    "DE-HB": "Bremen",
+    "DE-HH": "Hamburg",
+    "DE-HE": "Hessen",
+    "DE-MV": "Mecklenburg-Vorpommern",
+    "DE-NI": "Niedersachsen",
+    "DE-NW": "Nordrhein-Westfalen",
+    "DE-RP": "Rheinland-Pfalz",
+    "DE-SL": "Saarland",
+    "DE-SN": "Sachsen",
+    "DE-ST": "Sachsen-Anhalt",
+    "DE-SH": "Schleswig-Holstein",
+    "DE-TH": "Thüringen",
+}
+
+# Erste zwei Ziffern des Regionalschluessels je Bundesland. Darueber lassen
+# sich die Kreise eines Landes zuverlaessig greifen - die naheliegende
+# Abfrage "alle Relationen in der Flaeche" liefert auch angrenzende Kreise
+# der Nachbarlaender mit.
+RS_PRAEFIX: dict[str, str] = {
+    "DE-SH": "01", "DE-HH": "02", "DE-NI": "03", "DE-HB": "04",
+    "DE-NW": "05", "DE-HE": "06", "DE-RP": "07", "DE-BW": "08",
+    "DE-BY": "09", "DE-SL": "10", "DE-BE": "11", "DE-BB": "12",
+    "DE-MV": "13", "DE-SN": "14", "DE-ST": "15", "DE-TH": "16",
+}
+
+
+def land_filter(iso: str) -> str:
+    return f'area["ISO3166-2"="{iso}"]["admin_level"="4"]'
+
+
+def kreis_filter(regionalschluessel: str) -> str:
+    """Overpass-Gebiet eines Kreises ueber seinen Regionalschluessel.
+
+    Stabiler als der Name, der je nach Quelle "Landkreis Neuwied" oder nur
+    "Neuwied" lautet, und stabiler als Relations-Ids.
+    """
+    return 'area["de:regionalschluessel"~"^%s"]' % regionalschluessel
+
+
+# Zwischenspeicher fuer die Kreisliste je Bundesland. Die aendert sich
+# praktisch nie, aber jede Abfrage belastet einen gespendeten Dienst.
+KREIS_CACHE = Path(__file__).resolve().parent / ".kreise.json"
+
+
+def kreise(iso: str, erzwingen: bool = False) -> list[tuple[str, str]]:
+    """Alle Kreise und kreisfreien Staedte eines Bundeslands.
+
+    Rueckgabe: Liste aus (Name, Regionalschluessel), alphabetisch sortiert.
+    """
+    import json
+
+    bestand: dict[str, list] = {}
+    if KREIS_CACHE.exists() and not erzwingen:
+        try:
+            bestand = json.loads(KREIS_CACHE.read_text(encoding="utf-8"))
+        except (ValueError, OSError):
+            bestand = {}
+    if iso in bestand and not erzwingen:
+        return [(n, str(r)) for n, r in bestand[iso]]
+
+    praefix = RS_PRAEFIX[iso]
+    query = (
+        "[out:json][timeout:180];\n"
+        'rel["de:regionalschluessel"~"^%s"]["admin_level"="6"]'
+        '["boundary"="administrative"];\n'
+        "out tags;" % praefix
+    )
+    gefunden: list[tuple[str, str]] = []
+    gesehen: set[str] = set()
+    for el in abfragen(query):
+        tags = el.get("tags", {}) or {}
+        name = (tags.get("name") or "").strip()
+        rs = (tags.get("de:regionalschluessel") or "").strip()
+        if not name or not rs or rs in gesehen:
+            continue
+        gesehen.add(rs)
+        gefunden.append((name, rs))
+    gefunden.sort(key=lambda x: x[0].lower())
+
+    bestand[iso] = [[n, r] for n, r in gefunden]
+    try:
+        KREIS_CACHE.write_text(json.dumps(bestand, ensure_ascii=False, indent=1), encoding="utf-8")
+    except OSError:
+        pass
+    return gefunden
+
+
+# Peters Einzugsgebiet als Schnellwahl. Die Regionalschluessel sind stabiler
+# als Namen, die in OSM schon mal umbenannt oder anders geschrieben werden.
 REGIONEN: dict[str, Region] = {
-    "vulkaneifel": Region("Landkreis Vulkaneifel", '["de:regionalschluessel"="07233"]'),
-    "bitburg-pruem": Region("Eifelkreis Bitburg-Prüm", '["de:regionalschluessel"="07232"]'),
-    "bernkastel-wittlich": Region("Bernkastel-Wittlich", '["de:regionalschluessel"="07231"]'),
-    "cochem-zell": Region("Cochem-Zell", '["de:regionalschluessel"="07135"]'),
-    "ahrweiler": Region("Ahrweiler", '["de:regionalschluessel"="07131"]'),
-    "trier": Region("Trier", '["de:regionalschluessel"="07211"]'),
-    "trier-saarburg": Region("Trier-Saarburg", '["de:regionalschluessel"="07235"]'),
-    "bremen": Region("Bremen", '["de:regionalschluessel"="04011"]'),
-    "bremerhaven": Region("Bremerhaven", '["de:regionalschluessel"="04012"]'),
-    "cuxhaven": Region("Landkreis Cuxhaven", '["de:regionalschluessel"="03352"]'),
+    "vulkaneifel": Region("Landkreis Vulkaneifel", kreis_filter("07233")),
+    "bitburg-pruem": Region("Eifelkreis Bitburg-Prüm", kreis_filter("07232")),
+    "bernkastel-wittlich": Region("Bernkastel-Wittlich", kreis_filter("07231")),
+    "cochem-zell": Region("Cochem-Zell", kreis_filter("07135")),
+    "ahrweiler": Region("Ahrweiler", kreis_filter("07131")),
+    "trier": Region("Trier", kreis_filter("07211")),
+    "trier-saarburg": Region("Trier-Saarburg", kreis_filter("07235")),
+    "bremen": Region("Bremen", kreis_filter("04011")),
+    "bremerhaven": Region("Bremerhaven", kreis_filter("04012")),
+    "cuxhaven": Region("Landkreis Cuxhaven", kreis_filter("03352")),
     "wurster-nordseekueste": Region(
-        "Wurster Nordseeküste", '["name"="Wurster Nordseeküste"]["boundary"="administrative"]'
+        "Wurster Nordseeküste", 'area["name"="Wurster Nordseeküste"]["boundary"="administrative"]'
     ),
 }
 
@@ -112,7 +235,7 @@ def bauen(region: Region, branchen: list[str], nur_mit_website: bool = True) -> 
     koerper = "\n".join(teile)
     return (
         "[out:json][timeout:180];\n"
-        f"area{region.filter}->.a;\n"
+        f"{region.filter}->.a;\n"
         f"(\n{koerper}\n);\n"
         "out tags center;"
     )
@@ -123,7 +246,18 @@ def abfragen(query: str, leise: bool = False) -> list[dict]:
 
     Der Dienst antwortet unter Last mit 429 oder 504. Das ist kein Fehler,
     sondern eine Bitte zu warten - wer sofort nachlegt, wird haerter gedrosselt.
+    Deshalb wird vorab der Status gelesen und die genannte Wartezeit
+    abgesessen, statt blind zu versuchen.
     """
+    rest = wartezeit()
+    if rest > 0:
+        if not leise:
+            console.print(
+                f"[yellow]Overpass laesst gerade keine weitere Abfrage zu. "
+                f"Warte {rest} s …[/yellow]"
+            )
+        time.sleep(min(rest, 180) + 1)
+
     letzter = ""
     for versuch in range(1, VERSUCHE + 1):
         for endpunkt in ENDPUNKTE:
@@ -140,10 +274,15 @@ def abfragen(query: str, leise: bool = False) -> list[dict]:
                 continue
             if antwort.status_code == 200:
                 try:
-                    return antwort.json().get("elements", [])
+                    daten = antwort.json()
                 except ValueError:
-                    letzter = f"{host}: unlesbare Antwort"
+                    # Manche Spiegel liefern 200 mit einer HTML-Fehlerseite.
+                    letzter = f"{host}: Antwort ist kein JSON"
                     continue
+                if "elements" not in daten:
+                    letzter = f"{host}: Antwort ohne Ergebnisfeld"
+                    continue
+                return daten["elements"]
             letzter = f"{host}: HTTP {antwort.status_code}"
             if antwort.status_code not in (429, 503, 504):
                 continue
@@ -155,7 +294,12 @@ def abfragen(query: str, leise: bool = False) -> list[dict]:
                     f"Warte {pause:.0f}s und versuche es erneut …[/yellow]"
                 )
             time.sleep(pause)
-    raise RuntimeError(f"Overpass liefert nichts ({letzter}). Spaeter noch einmal versuchen.")
+    raise RuntimeError(
+        "Die Firmendatenbank (Overpass/OpenStreetMap) antwortet gerade nicht.\n\n"
+        f"Letzte Meldung: {letzter}\n\n"
+        "Das ist ein gespendeter Dienst mit engen Grenzen. In ein paar Minuten "
+        "noch einmal versuchen, oder ein kleineres Gebiet waehlen."
+    )
 
 
 MAIL_PREFIX = re.compile(r"^mailto:", re.IGNORECASE)
@@ -229,12 +373,18 @@ def suchen(region_name: str, branchen: list[str], leise: bool = False) -> list[F
         raise SystemExit(
             f"Unbekannte Region {region_name!r}. Bekannt: {', '.join(sorted(REGIONEN))}"
         )
+    return suchen_in(REGIONEN[region_name], branchen, leise=leise)
+
+
+def suchen_in(region: Region, branchen: list[str], leise: bool = False) -> list[Firma]:
+    """In einem beliebigen Gebiet suchen - Bundesland, Kreis oder Schnellwahl."""
     unbekannt = [b for b in branchen if b not in BRANCHEN]
     if unbekannt:
         raise SystemExit(
             f"Unbekannte Branche(n): {', '.join(unbekannt)}. Bekannt: {', '.join(BRANCHEN)}"
         )
-    region = REGIONEN[region_name]
+    if not branchen:
+        return []
     elemente = abfragen(bauen(region, branchen), leise=leise)
     return aufbereiten(elemente, branchen)
 

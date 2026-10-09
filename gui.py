@@ -47,8 +47,10 @@ from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
     QDateEdit,
+    QDialog,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -69,6 +71,7 @@ from PySide6.QtWidgets import (
 )
 
 import audit
+import finden
 import kontaktsuche
 from audit import Cache, Lead, LeadStatus, Result, Statusbuch
 
@@ -258,6 +261,191 @@ class LaufThread(QThread):
         finally:
             if cache is not None:
                 cache.close()
+
+
+# ---------------------------------------------------------------------------
+# Firmensuche
+# ---------------------------------------------------------------------------
+
+
+class SuchThread(QThread):
+    """Overpass-Abfragen laufen nebenher, sonst friert das Fenster ein."""
+
+    fertig = Signal(object)
+    fehlgeschlagen = Signal(str)
+
+    def __init__(self, aufgabe, *args) -> None:
+        super().__init__()
+        self.aufgabe = aufgabe
+        self.args = args
+
+    def run(self) -> None:  # noqa: D102
+        try:
+            self.fertig.emit(self.aufgabe(*self.args))
+        except Exception as exc:  # noqa: BLE001 - Fehler gehoeren in die GUI
+            self.fehlgeschlagen.emit(str(exc))
+
+
+class SuchDialog(QDialog):
+    """Firmen mit Website in einem Gebiet finden.
+
+    Groesste sinnvolle Einheit ist ein Bundesland: Rheinland-Pfalz liefert
+    allein im Handwerk ueber 8000 Betriebe, deren Pruefung bei hoeflichem
+    Tempo Stunden dauert. Ganz Deutschland waere das Sechzehnfache - das
+    nimmt weder Overpass an noch laesst es sich sinnvoll abtelefonieren.
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Firmen suchen")
+        self.setMinimumWidth(520)
+        self.firmen: list = []
+        self._thread: SuchThread | None = None
+
+        lay = QVBoxLayout(self)
+        lay.setSpacing(10)
+
+        hinweis = QLabel(
+            "Sucht Betriebe mit hinterlegter Website in OpenStreetMap. "
+            "Gefundene Firmen landen in der Liste und können dann geprüft werden."
+        )
+        hinweis.setWordWrap(True)
+        hinweis.setStyleSheet(f"color: {MUTED};")
+        lay.addWidget(hinweis)
+
+        form = QFormLayout()
+        form.setSpacing(8)
+
+        self.cb_land = QComboBox()
+        self.cb_land.addItem("— Bundesland wählen —", "")
+        for iso, titel in sorted(finden.BUNDESLAENDER.items(), key=lambda x: x[1]):
+            self.cb_land.addItem(titel, iso)
+        self.cb_land.currentIndexChanged.connect(self.land_gewechselt)
+        form.addRow("Bundesland", self.cb_land)
+
+        self.cb_kreis = QComboBox()
+        self.cb_kreis.addItem("ganzes Bundesland", "")
+        self.cb_kreis.setEnabled(False)
+        form.addRow("Kreis / Stadt", self.cb_kreis)
+
+        self.cb_schnell = QComboBox()
+        self.cb_schnell.addItem("— oder gespeicherte Region —", "")
+        for name, region in finden.REGIONEN.items():
+            self.cb_schnell.addItem(region.titel, name)
+        self.cb_schnell.currentIndexChanged.connect(self.schnellwahl_gewechselt)
+        form.addRow("Schnellwahl", self.cb_schnell)
+        lay.addLayout(form)
+
+        lay.addWidget(QLabel("Branchen"))
+        kasten = QWidget()
+        gitter = QGridLayout(kasten)
+        gitter.setContentsMargins(0, 0, 0, 0)
+        gitter.setSpacing(6)
+        self.branchen: dict[str, Schalter] = {}
+        for i, (schluessel, (titel, _sel)) in enumerate(finden.BRANCHEN.items()):
+            sch = Schalter(titel)
+            sch.setChecked(schluessel in ("beherbergung", "gastronomie", "handwerk"))
+            self.branchen[schluessel] = sch
+            gitter.addWidget(sch, i // 2, i % 2)
+        lay.addWidget(kasten)
+
+        self.lbl_stand = QLabel("")
+        self.lbl_stand.setWordWrap(True)
+        self.lbl_stand.setStyleSheet(f"color: {MUTED};")
+        lay.addWidget(self.lbl_stand)
+
+        knoepfe = QHBoxLayout()
+        knoepfe.addStretch(1)
+        self.btn_abbrechen = QPushButton("Abbrechen")
+        self.btn_abbrechen.clicked.connect(self.reject)
+        knoepfe.addWidget(self.btn_abbrechen)
+        self.btn_suchen = QPushButton("Firmen suchen")
+        self.btn_suchen.setObjectName("start")
+        self.btn_suchen.setDefault(True)
+        self.btn_suchen.clicked.connect(self.suchen)
+        knoepfe.addWidget(self.btn_suchen)
+        lay.addLayout(knoepfe)
+
+    # --- Gebietswahl ---
+
+    def land_gewechselt(self) -> None:
+        iso = self.cb_land.currentData()
+        self.cb_kreis.clear()
+        self.cb_kreis.addItem("ganzes Bundesland", "")
+        self.cb_kreis.setEnabled(False)
+        if not iso:
+            return
+        self.cb_schnell.setCurrentIndex(0)
+        self.lbl_stand.setText("Lade Kreise …")
+        self.btn_suchen.setEnabled(False)
+        self._starten(finden.kreise, iso, fertig=self._kreise_da)
+
+    def _kreise_da(self, kreise: list) -> None:
+        for name, osm_id in kreise:
+            self.cb_kreis.addItem(name, osm_id)
+        self.cb_kreis.setEnabled(True)
+        self.lbl_stand.setText(f"{len(kreise)} Kreise und kreisfreie Städte.")
+        self.btn_suchen.setEnabled(True)
+
+    def schnellwahl_gewechselt(self) -> None:
+        if self.cb_schnell.currentData():
+            self.cb_land.setCurrentIndex(0)
+            self.cb_kreis.clear()
+            self.cb_kreis.addItem("ganzes Bundesland", "")
+            self.cb_kreis.setEnabled(False)
+
+    def gebiet(self):
+        """Gewaehltes Gebiet als finden.Region, oder None."""
+        schnell = self.cb_schnell.currentData()
+        if schnell:
+            return finden.REGIONEN[schnell]
+        iso = self.cb_land.currentData()
+        if not iso:
+            return None
+        kreis_id = self.cb_kreis.currentData()
+        if kreis_id:
+            return finden.Region(self.cb_kreis.currentText(), finden.kreis_filter(kreis_id))
+        return finden.Region(finden.BUNDESLAENDER[iso], finden.land_filter(iso))
+
+    def gewaehlte_branchen(self) -> list[str]:
+        return [k for k, sch in self.branchen.items() if sch.isChecked()]
+
+    # --- Suche ---
+
+    def _starten(self, aufgabe, *args, fertig) -> None:
+        self._thread = SuchThread(aufgabe, *args)
+        self._thread.fertig.connect(fertig)
+        self._thread.fehlgeschlagen.connect(self._fehler)
+        self._thread.start()
+
+    def _fehler(self, text: str) -> None:
+        self.lbl_stand.setText("")
+        self.btn_suchen.setEnabled(True)
+        QMessageBox.warning(self, "Suche fehlgeschlagen", text)
+
+    def suchen(self) -> None:
+        gebiet = self.gebiet()
+        if gebiet is None:
+            QMessageBox.information(self, "Kein Gebiet", "Bitte ein Bundesland oder eine Region wählen.")
+            return
+        branchen = self.gewaehlte_branchen()
+        if not branchen:
+            QMessageBox.information(self, "Keine Branche", "Bitte mindestens eine Branche wählen.")
+            return
+
+        self.btn_suchen.setEnabled(False)
+        self.lbl_stand.setText(
+            f"Suche in {gebiet.titel} … Bei einem ganzen Bundesland kann das eine Minute dauern."
+        )
+        self._starten(finden.suchen_in, gebiet, branchen, fertig=self._firmen_da)
+
+    def _firmen_da(self, firmen: list) -> None:
+        self.firmen = firmen
+        self.btn_suchen.setEnabled(True)
+        if not firmen:
+            self.lbl_stand.setText("Keine Betriebe mit hinterlegter Website gefunden.")
+            return
+        self.accept()
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +751,11 @@ class Fenster(QMainWindow):
         lay.setContentsMargins(0, 0, 0, 0)
         lay.setSpacing(8)
 
+        self.btn_suche = QPushButton("🔍  Firmen suchen …")
+        self.btn_suche.setToolTip("Betriebe mit Website in einem Bundesland oder Kreis finden")
+        self.btn_suche.clicked.connect(self.firmen_suchen)
+        lay.addWidget(self.btn_suche)
+
         self.btn_oeffnen = QPushButton("CSV öffnen …")
         self.btn_oeffnen.clicked.connect(self.csv_dialog)
         lay.addWidget(self.btn_oeffnen)
@@ -809,6 +1002,55 @@ class Fenster(QMainWindow):
         lauf.addAction(a)
 
     # --- Daten -------------------------------------------------------------
+
+    def firmen_suchen(self) -> None:
+        """Suchdialog oeffnen und die Treffer als Leads uebernehmen."""
+        dialog = SuchDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted or not dialog.firmen:
+            return
+
+        neue = [
+            Lead(name=f.name, url=f.url, ort=f.ort, branche=f.branche,
+                 telefon=f.telefon, email=f.email)
+            for f in dialog.firmen
+        ]
+
+        # An eine offene Liste anhaengen statt sie zu ersetzen - so lassen
+        # sich mehrere Kreise zu einer Arbeitsliste zusammentragen.
+        vorhanden = {audit.url_key(l.url) for l in self.leads}
+        dazu = [l for l in neue if audit.url_key(l.url) not in vorhanden]
+        self.leads = self.leads + dazu
+
+        ziel = self._leads_sichern()
+        self.aus_cache_laden()
+        doppelt = len(neue) - len(dazu)
+        nachsatz = f", {doppelt} schon in der Liste" if doppelt else ""
+        self.statusBar().showMessage(
+            f"{len(dazu)} Firmen übernommen{nachsatz}. Mit „Prüfen“ bewerten.", 12000
+        )
+        QMessageBox.information(
+            self,
+            "Firmen gefunden",
+            f"{len(dazu)} neue Firmen in der Liste{nachsatz}.\n\n"
+            f"Gespeichert unter:\n{ziel}\n\n"
+            "Mit „Prüfen“ werden sie bewertet. Das dauert bei vielen Einträgen –\n"
+            "rechne mit etwa einer Sekunde pro Firma.",
+        )
+
+    def _leads_sichern(self) -> Path:
+        """Gefundene Firmen als CSV ablegen, damit nichts verloren geht."""
+        import csv as _csv
+
+        ziel = self.csv_pfad or (Path(__file__).resolve().parent / "leads.csv")
+        with ziel.open("w", newline="", encoding="utf-8") as fh:
+            w = _csv.writer(fh)
+            w.writerow(["name", "url", "ort", "branche", "telefon", "email"])
+            for l in self.leads:
+                w.writerow([l.name, l.url, l.ort, l.branche, l.telefon, l.email])
+        self.csv_pfad = ziel
+        self.einstellungen.setValue("letzte_csv", str(ziel.resolve()))
+        self.setWindowTitle(f"site-audit — {ziel.name}")
+        return ziel
 
     def csv_dialog(self) -> None:
         pfad, _ = QFileDialog.getOpenFileName(self, "Leads-CSV öffnen", "", "CSV (*.csv);;Alle Dateien (*)")

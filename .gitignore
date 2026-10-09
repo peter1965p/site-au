@@ -11,3 +11,4 @@ ergebnis.html
 *.sqlite
 .pytest_cache/
 *.pdf
+.kreise.json
