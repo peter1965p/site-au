@@ -98,6 +98,23 @@ PANEL2 = "#1e2633"
 LINE = "#2a3443"
 FG = "#e4e9f0"
 MUTED = "#93a0b4"
+
+# Vorschau-Geraete: (Breite in Pixeln oder None = volle Breite, Browserkennung oder None = Standard).
+# Breite und Kennung zusammen entscheiden, was eine Seite ausliefert: Media-Queries
+# schauen auf die Breite, manche Server auf die Kennung.
+GERAETE = {
+    "Desktop": (None, None),
+    "Tablet": (
+        820,
+        "Mozilla/5.0 (iPad; CPU OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Version/17.5 Mobile/15E148 Safari/604.1",
+    ),
+    "Handy": (
+        390,
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) "
+        "Version/17.5 Mobile/15E148 Safari/604.1",
+    ),
+}
 ACCENT = "#5aa9f7"
 BAD = "#ef4a5c"
 WARN = "#e8a33d"
@@ -1296,7 +1313,29 @@ class Fenster(QMainWindow):
         self.browser = None
         self._browser_fehlt = False
         self.web_platz = QWidget()
-        QVBoxLayout(self.web_platz).setContentsMargins(0, 0, 0, 0)
+        web_lay = QVBoxLayout(self.web_platz)
+        web_lay.setContentsMargins(0, 0, 0, 0)
+        web_lay.setSpacing(4)
+        self.geraet = "Desktop"
+        self.geraet_knoepfe: dict[str, QPushButton] = {}
+        geraete_leiste = QHBoxLayout()
+        geraete_leiste.setContentsMargins(6, 4, 6, 0)
+        geraete_leiste.setSpacing(6)
+        for name, (breite, _) in GERAETE.items():
+            k = QPushButton(name)
+            k.setCheckable(True)
+            k.setChecked(name == self.geraet)
+            k.setToolTip(
+                "Volle Breite des Fensters" if breite is None else f"Seite in {breite} Pixeln Breite, mit Mobil-Kennung"
+            )
+            k.clicked.connect(lambda _=False, n=name: self.geraet_waehlen(n))
+            self.geraet_knoepfe[name] = k
+            geraete_leiste.addWidget(k)
+        geraete_leiste.addStretch(1)
+        web_lay.addLayout(geraete_leiste)
+        self._web_zeile = QHBoxLayout()
+        self._web_zeile.setContentsMargins(0, 0, 0, 0)
+        web_lay.addLayout(self._web_zeile, 1)
         self.tabs.addTab(self.web_platz, "Vorschau")
         self.tabs.setTabToolTip(1, "Schneller Blick ohne Fensterwechsel (Chromium)")
         self.tabs.currentChanged.connect(self.tab_gewechselt)
@@ -1718,7 +1757,7 @@ class Fenster(QMainWindow):
                 )
                 hinweis.setAlignment(Qt.AlignmentFlag.AlignCenter)
                 hinweis.setStyleSheet(f"color: {MUTED};")
-                self.web_platz.layout().addWidget(hinweis)
+                self._web_zeile.addWidget(hinweis)
                 return None
             from PySide6.QtWebEngineCore import QWebEnginePage
 
@@ -1735,8 +1774,28 @@ class Fenster(QMainWindow):
 
             self.browser = QWebEngineView()
             self.browser.setPage(StillePage(self.browser))
-            self.web_platz.layout().addWidget(self.browser)
+            self._ua_standard = self.browser.page().profile().httpUserAgent()
+            self._web_zeile.addStretch(1)
+            self._web_zeile.addWidget(self.browser, 100)
+            self._web_zeile.addStretch(1)
+            self._geraet_anwenden(neu_laden=False)
         return self.browser
+
+    def geraet_waehlen(self, name: str) -> None:
+        """Vorschau als Desktop, Tablet oder Handy zeigen."""
+        self.geraet = name
+        for n, k in self.geraet_knoepfe.items():
+            k.setChecked(n == name)
+        self._geraet_anwenden(neu_laden=True)
+
+    def _geraet_anwenden(self, neu_laden: bool) -> None:
+        if self.browser is None:
+            return
+        breite, kennung = GERAETE[self.geraet]
+        self.browser.setMaximumWidth(16777215 if breite is None else breite)
+        self.browser.page().profile().setHttpUserAgent(kennung or self._ua_standard)
+        if neu_laden:
+            self.browser.reload()
 
     def _kontaktleiste_fuellen(self, r) -> None:
         """Empfehlung und Kontaktwege als erste Zeile im Detailbereich."""

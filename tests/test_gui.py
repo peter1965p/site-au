@@ -546,6 +546,46 @@ def test_vorschau_laedt_den_browser_nach(fenster, monkeypatch):
     assert erzeugt and erzeugt[0].startswith("http")
 
 
+def test_geraetewahl_setzt_breite_und_kennung(fenster):
+    """Tablet/Handy begrenzen die Breite und senden eine Mobil-Kennung, Desktop hebt beides auf."""
+    gesetzt = {}
+
+    class Profil:
+        def setHttpUserAgent(self, ua):
+            gesetzt["ua"] = ua
+
+    class Seite:
+        def profile(self):
+            return Profil()
+
+    class Attrappe:
+        def __init__(self):
+            self.breite = None
+            self.neu = 0
+
+        def page(self):
+            return Seite()
+
+        def setMaximumWidth(self, b):
+            self.breite = b
+
+        def reload(self):
+            self.neu += 1
+
+    fenster.geraet_waehlen("Handy")  # ohne Browser: darf nicht kippen
+    assert fenster.geraet == "Handy"
+    fenster.browser = Attrappe()
+    fenster._ua_standard = "Standard"
+    fenster.geraet_waehlen("Tablet")
+    assert fenster.browser.breite == 820 and "iPad" in gesetzt["ua"] and fenster.browser.neu == 1
+    fenster.geraet_waehlen("Handy")
+    assert fenster.browser.breite == 390 and "iPhone" in gesetzt["ua"]
+    fenster.geraet_waehlen("Desktop")
+    assert fenster.browser.breite > 10000 and gesetzt["ua"] == "Standard"
+    assert [n for n, k in fenster.geraet_knoepfe.items() if k.isChecked()] == ["Desktop"]
+    fenster.browser = None
+
+
 def test_score_farbe_folgt_den_schwellen():
     assert gui.score_farbe(80, "ok") == gui.BAD
     assert gui.score_farbe(45, "ok") == gui.WARN
