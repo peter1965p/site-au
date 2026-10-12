@@ -48,6 +48,7 @@ from PySide6.QtGui import (
     QStandardItemModel,
     QKeySequence,
     QPainter,
+    QPixmap,
     QPalette,
     QTextDocument,
 )
@@ -58,6 +59,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
     QDialog,
+    QGraphicsDropShadowEffect,
     QFileDialog,
     QFormLayout,
     QGridLayout,
@@ -550,6 +552,100 @@ class SuchDialog(QDialog):
 
 
 # ---------------------------------------------------------------------------
+# Schwebende Karten
+# ---------------------------------------------------------------------------
+
+
+class SchattenKarte(QWidget):
+    """Hebt ein Widget mit einem weichen Schlagschatten vom Hintergrund ab.
+
+    Qt-Stylesheets kennen kein box-shadow. Ein QGraphicsDropShadowEffect direkt auf
+    der Tabelle wuerde bei jedem Neuzeichnen den ganzen Inhalt in ein Bild rendern -
+    bei 25.000 Zeilen merkt man das beim Scrollen. Deshalb wird der Schatten hier
+    *hinter* das Widget gemalt, einmal berechnet und je nach Groesse zwischengespeichert.
+    Das Widget selbst wird dadurch nicht beruehrt.
+
+    Der Schatten besteht aus gestaffelten, leicht durchscheinenden Rechtecken mit
+    wachsendem Radius und ist nach unten versetzt, wie bei einer Lichtquelle von oben.
+    """
+
+    def __init__(
+        self,
+        inhalt: QWidget,
+        radius: int = 8,
+        weite: int = 14,
+        versatz: int = 5,
+        staerke: float = 0.9,
+        raender: tuple[int, int, int, int] | None = None,
+        kopf=0,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.inhalt = inhalt
+        self.radius = radius
+        self.weite = weite
+        self.versatz = versatz
+        self.staerke = staerke
+        # Hoehe (oder Funktion, die sie liefert) eines Streifens oben, der nicht zur Karte gehoert -
+        # etwa die Tab-Leiste eines QTabWidget. Dort darf kein Schatten liegen.
+        self.kopf = kopf
+        # links, oben, rechts, unten: oben knapper (der Schatten faellt nach unten)
+        self.raender = raender or (weite, max(2, weite - versatz - 4), weite, weite + versatz)
+        self._cache: QPixmap | None = None
+        self._cache_kopf = -1
+
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(*self.raender)
+        lay.setSpacing(0)
+        lay.addWidget(inhalt)
+
+    def resizeEvent(self, event) -> None:  # noqa: D102
+        self._cache = None
+        super().resizeEvent(event)
+
+    def schatten(self) -> QPixmap:
+        """Das Schattenbild fuer die aktuelle Groesse (gepuffert)."""
+        dpr = self.devicePixelRatioF()
+        kopf = self.kopf() if callable(self.kopf) else self.kopf
+        if self._cache is not None and self._cache.size() == self.size() * dpr and self._cache_kopf == kopf:
+            return self._cache
+
+        bild = QPixmap(self.size() * dpr)
+        bild.setDevicePixelRatio(dpr)
+        bild.fill(Qt.GlobalColor.transparent)
+        l, o, r, u = self.raender
+        kern = QRectF(l, o + kopf + self.versatz, max(0, self.width() - l - r), max(0, self.height() - o - kopf - u))
+        n = max(1, self.weite)
+        # Deckkraft je Lage so gewaehlt, dass sie sich am Rand zu "staerke" summieren
+        je_lage = 1.0 - (1.0 - min(self.staerke, 0.95)) ** (1.0 / n)
+        maler = QPainter(bild)
+        maler.setRenderHint(QPainter.RenderHint.Antialiasing)
+        maler.setPen(Qt.PenStyle.NoPen)
+        maler.setBrush(QColor(0, 0, 0, max(1, round(255 * je_lage))))
+        for i in range(n, -1, -1):  # von aussen (schwach) nach innen (stark)
+            rect = kern.adjusted(-i, -i, i, i)
+            maler.drawRoundedRect(rect, self.radius + i, self.radius + i)
+        maler.end()
+        self._cache = bild
+        self._cache_kopf = kopf
+        return bild
+
+    def paintEvent(self, event) -> None:  # noqa: D102
+        maler = QPainter(self)
+        maler.drawPixmap(0, 0, self.schatten())
+        maler.end()
+
+
+def schwebend(knopf: QWidget, unschaerfe: int = 18, hoehe: int = 4, deckkraft: int = 170) -> None:
+    """Zarter Schatten fuer einen kleinen Knopf. Fuer grosse Flaechen taugt das nicht (siehe SchattenKarte)."""
+    effekt = QGraphicsDropShadowEffect(knopf)
+    effekt.setBlurRadius(unschaerfe)
+    effekt.setOffset(0, hoehe)
+    effekt.setColor(QColor(0, 0, 0, deckkraft))
+    knopf.setGraphicsEffect(effekt)
+
+
+# ---------------------------------------------------------------------------
 # Wiedervorlage: Erinnerung
 # ---------------------------------------------------------------------------
 
@@ -983,13 +1079,14 @@ class Fenster(QMainWindow):
     def _baue_oberflaeche(self) -> None:
         zentral = QWidget()
         aussen = QVBoxLayout(zentral)
-        aussen.setContentsMargins(10, 10, 10, 6)
-        aussen.setSpacing(8)
+        # Die Karten bringen ihren Schattenrand selbst mit, der aeussere Rand faellt knapper aus
+        aussen.setContentsMargins(6, 8, 6, 0)
+        aussen.setSpacing(4)
 
         aussen.addWidget(self._baue_leiste())
 
         teiler = QSplitter(Qt.Orientation.Horizontal)
-        teiler.addWidget(self._baue_tabelle())
+        teiler.addWidget(SchattenKarte(self._baue_tabelle(), raender=(10, 4, 4, 18)))
         teiler.addWidget(self._baue_detail())
         teiler.setStretchFactor(0, 4)
         teiler.setStretchFactor(1, 5)
@@ -1040,7 +1137,7 @@ class Fenster(QMainWindow):
     def _baue_leiste(self) -> QWidget:
         leiste = QWidget()
         lay = QHBoxLayout(leiste)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(4, 0, 4, 10)  # unten Platz, sonst schneidet die Leiste den Schatten ab
         lay.setSpacing(8)
 
         self.btn_suche = QPushButton("🔍  Firmen suchen …")
@@ -1061,6 +1158,8 @@ class Fenster(QMainWindow):
         self.btn_stop.setEnabled(False)
         self.btn_stop.clicked.connect(self.lauf_stoppen)
         lay.addWidget(self.btn_stop)
+        for knopf in (self.btn_suche, self.btn_oeffnen, self.btn_start, self.btn_stop):
+            schwebend(knopf)
 
         self.chk_refresh = Schalter("neu prüfen")
         self.chk_refresh.setToolTip("Cache ignorieren und alle Seiten erneut abrufen")
@@ -1164,7 +1263,7 @@ class Fenster(QMainWindow):
         behaelter = QWidget()
         lay = QVBoxLayout(behaelter)
         lay.setContentsMargins(0, 0, 0, 0)
-        lay.setSpacing(8)
+        lay.setSpacing(2)
 
         self.titel = QLabel("Kein Lead ausgewählt")
         self.titel.setStyleSheet("font-size: 17px; font-weight: 600;")
@@ -1183,7 +1282,7 @@ class Fenster(QMainWindow):
         )
         self.kontaktleiste.setOpenExternalLinks(True)
         self.kontaktleiste.setWordWrap(True)
-        lay.addWidget(self.kontaktleiste)
+        lay.addWidget(SchattenKarte(self.kontaktleiste, raender=(4, 0, 10, 12), weite=12, versatz=4))
 
         self.tabs = QTabWidget()
 
@@ -1202,8 +1301,14 @@ class Fenster(QMainWindow):
         self.tabs.setTabToolTip(1, "Schneller Blick ohne Fensterwechsel (Chromium)")
         self.tabs.currentChanged.connect(self.tab_gewechselt)
 
-        lay.addWidget(self.tabs, 1)
-        lay.addWidget(self._baue_statusfeld())
+        lay.addWidget(
+            SchattenKarte(
+                self.tabs, raender=(4, 0, 10, 12), weite=12, versatz=4,
+                kopf=lambda: max(self.tabs.tabBar().height(), self.tabs.tabBar().sizeHint().height()),
+            ),
+            1,
+        )
+        lay.addWidget(SchattenKarte(self._baue_statusfeld(), raender=(4, 0, 10, 14), weite=12, versatz=4))
         return behaelter
 
     def _baue_statusfeld(self) -> QWidget:
@@ -2110,7 +2215,7 @@ QPushButton#faellig {{
 }}
 QPushButton#faellig:hover {{ background: #2b2416; }}
 
-QSplitter::handle {{ background: transparent; width: 8px; }}
+QSplitter::handle {{ background: transparent; width: 3px; }}
 QScrollBar:vertical {{ background: transparent; width: 11px; }}
 QScrollBar::handle:vertical {{ background: #2f3a4a; border-radius: 5px; min-height: 28px; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}

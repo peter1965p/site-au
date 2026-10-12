@@ -1393,3 +1393,171 @@ def test_fenster_schliesst_das_landbuch(lf):
         lf.landbuch.alle()
     lf.statusbuch = gui.Statusbuch(lf.db_pfad)  # fuer das Aufraeumen der Fixture
     lf.landbuch = gui.Landbuch(lf.db_pfad)
+
+
+# ===========================================================================
+# Schwebende Karten (Schatten)
+# ===========================================================================
+
+from PySide6.QtCore import QPoint, QSize  # noqa: E402
+from PySide6.QtGui import QColor, QResizeEvent  # noqa: E402
+from PySide6.QtWidgets import QGraphicsDropShadowEffect, QLabel, QWidget  # noqa: E402
+
+
+def _helligkeit(farbe) -> float:
+    return 0.299 * farbe.red() + 0.587 * farbe.green() + 0.114 * farbe.blue()
+
+
+def _karte(**kw):
+    inhalt = QLabel("Inhalt")
+    karte = gui.SchattenKarte(inhalt, **kw)
+    karte.resize(300, 200)
+    return karte, inhalt
+
+
+def test_karte_nimmt_das_widget_in_sich_auf(app):
+    karte, inhalt = _karte(raender=(12, 4, 8, 16))
+    assert inhalt.parent() is karte
+    assert karte.raender == (12, 4, 8, 16)
+    assert karte.layout().contentsMargins().left() == 12
+    assert karte.layout().contentsMargins().bottom() == 16
+
+
+def test_standardraender_lassen_unten_mehr_platz_als_oben(app):
+    """Der Schatten faellt nach unten - dort braucht er den meisten Platz."""
+    karte, _ = _karte()
+    links, oben, rechts, unten = karte.raender
+    assert unten > oben
+    assert links == rechts
+
+
+def test_schatten_ist_unter_der_karte_dunkler_als_ueber_ihr(app):
+    karte, _ = _karte(raender=(14, 10, 14, 20), weite=12, versatz=5)
+    bild = karte.schatten().toImage()
+    mitte = karte.width() // 2
+    ueber = bild.pixelColor(mitte, 10 - 3).alpha()          # knapp ueber der oberen Kartenkante
+    unter = bild.pixelColor(mitte, karte.height() - 20 + 3).alpha()  # knapp unter der unteren Kartenkante
+    assert unter > ueber, "das Licht kommt von oben: unten ist der Schatten staerker"
+    assert unter > 90, "der Schatten ist deutlich sichtbar, nicht nur ein Hauch"
+
+
+def test_schatten_laeuft_nach_aussen_weich_aus(app):
+    karte, _ = _karte(raender=(14, 10, 14, 20), weite=12, versatz=5)
+    bild = karte.schatten().toImage()
+    mitte = karte.width() // 2
+    unterkante = karte.height() - 20
+    alphas = [bild.pixelColor(mitte, unterkante + d).alpha() for d in range(0, 16, 3)]
+    assert alphas == sorted(alphas, reverse=True), "nach aussen nimmt die Deckkraft ab"
+    assert alphas[-1] < alphas[0] / 2
+
+
+def test_weit_entfernte_ecke_ist_schattenfrei(app):
+    karte, _ = _karte()
+    assert karte.schatten().toImage().pixelColor(0, 0).alpha() == 0
+    assert karte.schatten().toImage().pixelColor(karte.width() - 1, 0).alpha() == 0
+
+
+def test_schattenbild_wird_zwischengespeichert_und_bei_groessenaenderung_neu_gemalt(app):
+    """Wichtig fuers Scrollen: gemalt wird nur bei Bedarf, nicht bei jedem Neuzeichnen."""
+    karte, _ = _karte()
+    erstes = karte.schatten()
+    assert karte.schatten() is erstes
+    karte.resize(400, 260)
+    karte.resizeEvent(QResizeEvent(karte.size(), QSize(300, 200)))
+    assert karte.schatten() is not erstes
+    assert karte.schatten().size() == karte.size() * karte.devicePixelRatioF()
+
+
+def test_kopfstreifen_bleibt_schattenfrei(app):
+    """Die Tab-Leiste gehoert nicht zur Karte: dahinter darf kein dunkles Band liegen."""
+    mit, _ = _karte(raender=(14, 4, 14, 20), kopf=0)
+    ohne, _ = _karte(raender=(14, 4, 14, 20), kopf=40)
+    x = mit.width() // 2
+    y = 4 + 30  # mitten im Kopfstreifen
+    assert mit.schatten().toImage().pixelColor(x, y).alpha() > 0, "ohne Ausnahme: Schatten liegt dort"
+    assert ohne.schatten().toImage().pixelColor(x, y).alpha() == 0, "mit Ausnahme: frei"
+
+
+def test_kopfstreifen_kann_eine_funktion_sein(app):
+    hoehen = []
+    karte, _ = _karte(raender=(14, 4, 14, 20), kopf=lambda: hoehen.append(1) or 40)
+    karte.schatten()
+    assert hoehen, "die Hoehe wird beim Malen erfragt (Tab-Leiste ist erst dann bekannt)"
+
+
+def test_schatten_aendert_sich_mit_der_kopfhoehe(app):
+    hoehe = {"h": 0}
+    karte, _ = _karte(raender=(14, 4, 14, 20), kopf=lambda: hoehe["h"])
+    erstes = karte.schatten()
+    hoehe["h"] = 40
+    assert karte.schatten() is not erstes
+
+
+def test_weit_ist_die_ausdehnung_des_schattens(app):
+    eng, _ = _karte(raender=(20, 20, 20, 30), weite=4)
+    breit, _ = _karte(raender=(20, 20, 20, 30), weite=16)
+    mitte, y = eng.width() // 2, eng.height() - 30 + 12
+    assert breit.schatten().toImage().pixelColor(mitte, y).alpha() > eng.schatten().toImage().pixelColor(mitte, y).alpha()
+
+
+def test_knopf_schweben_setzt_einen_schlagschatten(app):
+    knopf = gui.QPushButton("x")
+    gui.schwebend(knopf)
+    effekt = knopf.graphicsEffect()
+    assert isinstance(effekt, QGraphicsDropShadowEffect)
+    assert effekt.blurRadius() > 0 and effekt.yOffset() > 0
+
+
+# --- im echten Fenster -------------------------------------------------------------------
+
+
+@pytest.fixture
+def sichtbar(app, fenster):
+    """Fenster so, wie das Programm es zeigt: mit dem echten Stylesheet (dunkler Hintergrund).
+
+    Ohne Stylesheet waere der Fensterhintergrund hell, und ein Vergleich mit dem
+    dunklen Programmhintergrund misst Unsinn.
+    """
+    app.setStyleSheet(gui.STYLE)
+    fenster.resize(1400, 900)
+    fenster.show()
+    for _ in range(5):
+        QApplication.processEvents()
+    yield fenster
+    app.setStyleSheet("")
+
+
+def test_tabelle_und_detailbereich_sind_karten(fenster):
+    assert isinstance(fenster.tabelle.parent(), gui.SchattenKarte)
+    assert isinstance(fenster.kontaktleiste.parent(), gui.SchattenKarte)
+    assert isinstance(fenster.tabs.parent(), gui.SchattenKarte)
+    assert isinstance(fenster.statusfeld.parent(), gui.SchattenKarte)
+
+
+def test_toolbar_knoepfe_schweben(fenster):
+    for knopf in (fenster.btn_suche, fenster.btn_oeffnen, fenster.btn_start, fenster.btn_stop):
+        assert isinstance(knopf.graphicsEffect(), gui.QGraphicsDropShadowEffect), knopf.text()
+
+
+def test_tabelle_selbst_hat_keinen_grafikeffekt(fenster):
+    """Ein Effekt auf der Tabelle wuerde bei jedem Neuzeichnen den Inhalt in ein Bild rendern."""
+    assert fenster.tabelle.graphicsEffect() is None
+    assert fenster.tabs.graphicsEffect() is None
+
+
+def test_unter_der_tabelle_liegt_im_fenster_ein_sichtbarer_schatten(sichtbar):
+    bild = sichtbar.grab().toImage()
+    unten = sichtbar.tabelle.mapTo(sichtbar, QPoint(sichtbar.tabelle.width() // 2, sichtbar.tabelle.height()))
+    hintergrund = _helligkeit(QColor(gui.BG))
+    direkt_darunter = _helligkeit(bild.pixelColor(unten.x(), unten.y() + 4))
+    assert direkt_darunter < hintergrund - 8, (direkt_darunter, hintergrund)
+    weit_weg = _helligkeit(bild.pixelColor(unten.x(), unten.y() + 40))
+    assert abs(weit_weg - hintergrund) < 3, "der Schatten klingt aus und faerbt nicht alles dunkel"
+
+
+def test_hinter_der_tab_leiste_liegt_kein_dunkles_band(sichtbar):
+    bild = sichtbar.grab().toImage()
+    leiste = sichtbar.tabs.tabBar()
+    p = leiste.mapTo(sichtbar, QPoint(leiste.width() - 30, leiste.height() // 2))
+    # rechts neben den Tabs: nur Hintergrund, kein Schatten
+    assert _helligkeit(bild.pixelColor(p.x(), p.y())) > _helligkeit(QColor(gui.BG)) - 3

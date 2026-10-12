@@ -253,6 +253,25 @@ unversehrt.
   Zeile im Modell aktualisiert werden (`status_aktualisieren`), sonst filtert die
   Liste nach altem Stand. Das Statusfeld der GUI tut beides.
 
+## Schwebende Karten (2026-10-12)
+
+Tabelle, Kontaktleiste, Detailbereich und Akquise-Feld haben einen weichen Schlagschatten,
+die Knoepfe oben einen zarten Effekt-Schatten.
+
+- `SchattenKarte` malt den Schatten **hinter** das Widget (gestaffelte, durchscheinende
+  Rechtecke, nach unten versetzt), einmal je Groesse zwischengespeichert. Ein
+  `QGraphicsDropShadowEffect` direkt auf der Tabelle waere falsch: Er rendert bei jedem
+  Neuzeichnen den ganzen Inhalt in ein Bild, bei 25.000 Zeilen spuerbar beim Scrollen.
+  Effekte gibt es deshalb nur an kleinen Knoepfen (`schwebend()`).
+- Parameter: `staerke` (Standard 0,9), `weite`, `versatz`, `raender`. Gemessen: direkt
+  unter der Karte faellt die Helligkeit von 20,6 (Hintergrund) auf 1,7 und klingt ueber
+  etwa 18 px aus - auf diesem Hintergrund ist mehr nicht moeglich.
+- `kopf=`: Streifen oben, der nicht zur Karte gehoert. Die Tab-Leiste eines
+  QTabWidget ist nicht Teil der Pane; ohne die Ausnahme lag ein dunkles Band dahinter.
+- Test-Falle: Schatten- und Farbvergleiche im Fenster nur mit gesetztem App-Stylesheet.
+  Ohne ist der Fensterhintergrund hell (RGB 239), und ein Vergleich gegen den dunklen
+  Programmhintergrund misst Unsinn.
+
 ## Moegliche naechste Schritte
 
 - `--pagespeed` ist verifiziert (Key liegt in `.env`, nicht im Repo)
