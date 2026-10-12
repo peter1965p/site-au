@@ -225,6 +225,34 @@ Daten waren nie in Gefahr: Der Lauf stuerzte ab, bevor er etwas Neues schrieb; d
 4.557 Ergebnisse in der Datenbank und die 25.284 Firmen in `leads.csv` blieben
 unversehrt.
 
+## Orte nach Bundesland, Erinnerung, Aussortieren (2026-10-12)
+
+- **Bundesland je Firma:** `Lead.bundesland`/`Result.bundesland` (ISO-Code), Spalte
+  `bundesland` in der CSV, Tabelle `lead_land` in der SQLite-Datei (`Landbuch`).
+  Neue Suchen setzen es selbst (`Region.land`, aus dem Gebiet; Schnellwahl ueber den
+  Kreisschluessel). `laender.py` haelt die Tabellen, `finden.py` bietet sie weiter an.
+- **Bestehende 25.284 Firmen einmalig zugeordnet:** `leads.csv` besteht aus zwei
+  Suchbloecken (Niedersachsen, danach Rheinland-Pfalz). Die Blockgrenze Zeile 17.693
+  ist ueber Orte belegt (letzter NI-Marker Zeile 17.680, Worms als erster RP-Ort in
+  17.693, davor Holzminden/Borkum); die fuenf Testfirmen nach ihren Impressen. Ergebnis
+  17.688 NI, 7.594 RP, 2 HB. Sicherung der Datenbank vorher. Die CSV wurde nicht
+  veraendert - die Zuordnung steht in der Datenbank, damit ein aelterer Programmstand
+  sie nicht ueberschreibt.
+- **Ortsauswahl:** `QStandardItemModel` mit Ueberschriften (selbst waehlbar, filtern
+  das Land) und Orten; Datenwert `"Land|Ort"` (`ort_schluessel`/`ort_zerlegen`), "-"
+  steht fuer "ohne Bundesland". Einrueckung per Delegate nur im aufgeklappten Zustand.
+- **Aussortieren:** Status "nicht passend" blendet die Zeile sofort aus
+  (`LeadFilter`), Sperrliste = `Statusbuch.aussortierte()`; GUI-Lauf, CLI und
+  Firmensuche beachten sie. Rueckgaengig-Knopf 15 s, danach nur noch ueber den
+  Akquise-Filter. Aussortierte zaehlen weder im Zaehler noch in der Ortsauswahl.
+- **Erinnerung:** `wv_pruefen()` beim Start und im Minutentakt, hoechstens einmal je
+  Kalendertag (`_wv_zuletzt`); Liste (`WiedervorlageDialog`) plus `notify-send`.
+  `faellige_wiedervorlagen()` schliesst erledigte Status aus. In den GUI-Tests ist
+  `desktop_hinweis` per autouse-Fixture ersetzt, damit keine echten Meldungen aufpoppen.
+- Lehre aus den Tests: Wird eine Wiedervorlage in der Datenbank gesetzt, muss auch die
+  Zeile im Modell aktualisiert werden (`status_aktualisieren`), sonst filtert die
+  Liste nach altem Stand. Das Statusfeld der GUI tut beides.
+
 ## Moegliche naechste Schritte
 
 - `--pagespeed` ist verifiziert (Key liegt in `.env`, nicht im Repo)

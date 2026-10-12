@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 import audit  # noqa: E402
 import gui  # noqa: E402
-from audit import Cache, Result, Statusbuch  # noqa: E402
+from audit import Cache, Landbuch, Result, Statusbuch  # noqa: E402
 
 
 @pytest.fixture
@@ -59,6 +59,14 @@ def _result(name: str, url: str, score: float, ort="Daun", branche="Handwerk", s
         empfehlung="Anruf" if score > 50 else "zurueckstellen",
         empfehlung_grund=f"Score {score:.0f}",
     )
+
+
+@pytest.fixture(autouse=True)
+def desktop_meldungen(monkeypatch):
+    """Keine echten Desktop-Meldungen aus den Tests; die Aufrufe werden mitgeschrieben."""
+    gerufen: list[tuple[str, str]] = []
+    monkeypatch.setattr(gui, "desktop_hinweis", lambda titel, text: gerufen.append((titel, text)) or True)
+    return gerufen
 
 
 @pytest.fixture
@@ -238,8 +246,15 @@ def test_nicht_erreichbare_seite_zeigt_strich_statt_score(fenster):
 # --- Filter ----------------------------------------------------------------
 
 
+def _ort_waehlen(fenster, ort, land=""):
+    """Eintrag der Ortsauswahl waehlen. Der Datenwert ist "Land|Ort" (siehe gui.ort_schluessel)."""
+    idx = fenster.f_ort.findData(gui.ort_schluessel(land, ort))
+    assert idx >= 0, f"{ort} ({land}) steht nicht in der Ortsauswahl"
+    fenster.f_ort.setCurrentIndex(idx)
+
+
 def test_filter_nach_ort(fenster):
-    fenster.f_ort.setCurrentIndex(fenster.f_ort.findData("Gerolstein"))
+    _ort_waehlen(fenster, "Gerolstein")
     assert fenster.proxy.rowCount() == 1
 
 
@@ -291,7 +306,7 @@ def test_suche_findet_in_notizen(fenster):
 
 
 def test_filter_lassen_sich_kombinieren(fenster):
-    fenster.f_ort.setCurrentIndex(fenster.f_ort.findData("Daun"))
+    _ort_waehlen(fenster, "Daun")
     fenster.f_min.setCurrentIndex(fenster.f_min.findData(50))
     assert fenster.proxy.rowCount() == 1, "Alpha - Delta hat keinen Score"
 
@@ -832,3 +847,549 @@ def test_suchknopf_bei_platzhalterseite_auch_mit_telefon():
 def test_suchknopf_bei_nicht_erreichbarer_seite_auch_mit_telefon():
     r = audit.unbewertet(audit.Lead("X", "x.de", telefon="06591 1"), "", audit.STATUS_UNERREICHBAR, "dns", "x", "t")
     assert gui.suche_sinnvoll(r) is True
+
+
+
+# ===========================================================================
+# Orte nach Bundesland, Aussortieren, Wiedervorlage
+# ===========================================================================
+
+from datetime import date, timedelta  # noqa: E402
+
+from PySide6.QtCore import QCoreApplication, QEvent, Qt  # noqa: E402
+from PySide6.QtGui import QCloseEvent  # noqa: E402
+
+CSV_LAENDER = """name,url,ort,branche,telefon,email,bundesland
+Hann,hann.de,Hannover,Handwerk,05111,,Niedersachsen
+Osna,osna.de,Osnabrück,Handwerk,05412,,DE-NI
+Luene,luene.de,Lüneburg,Handwerk,04131,,ni
+OhneOrt,ohneort.de,,Handwerk,,,Niedersachsen
+Mainz,mainz.de,Mainz,Handwerk,06131,,Rheinland-Pfalz
+Mand,mand.de,Manderscheid,Handwerk,06572,,RP
+Ahr,ahr.de,Ahrweiler,Handwerk,02641,,Rheinland-Pfalz
+Ueb,ueb.de,Überlingen,Handwerk,07551,,Baden-Württemberg
+NkNI,nkni.de,Neuenkirchen,Handwerk,05,,Niedersachsen
+NkRP,nkrp.de,Neuenkirchen,Handwerk,06,,Rheinland-Pfalz
+Irgend,irgend.de,Irgendwo,Handwerk,07,,
+"""
+
+
+@pytest.fixture
+def lf(app, tmp_path, einstellungen):
+    """Fenster mit Firmen aus mehreren Bundeslaendern, alle bereits geprueft."""
+    db = tmp_path / "db.sqlite"
+    csv = tmp_path / "leads.csv"
+    csv.write_text(CSV_LAENDER, encoding="utf-8")
+    cache = Cache(db)
+    for i, l in enumerate(audit.read_leads(csv)):
+        cache.put(Result(l.name, l.url, l.ort, l.branche, f"https://{l.url}/", "ok", 90.0 - i * 5, "", ["Argument"],
+                         ["Befund"], {}, "2026-10-09T10:00:00", telefon=l.telefon, empfehlung="Anruf",
+                         empfehlung_grund="x"), False)
+    cache.close()
+    f = gui.Fenster(csv, db, einstellungen)
+    yield f
+    if f._wv_dialog is not None:
+        f._wv_dialog.close()
+    f.statusbuch.close()
+    f.landbuch.close()
+    f.deleteLater()
+
+
+def _eintraege(box):
+    """(Text, Ebene) aller Eintraege der Ortsauswahl, Ebene "land", "ort" oder None."""
+    m = box.model()
+    return [(m.item(i).text(), m.item(i).data(gui.EBENE)) for i in range(m.rowCount())]
+
+
+def _namen(f):
+    return [f.proxy.index(r, gui.S_FIRMA).data() for r in range(f.proxy.rowCount())]
+
+
+def _faellig(f, name, tage_zurueck=1, status="wiedervorlage", notiz=""):
+    """Wiedervorlage setzen - in der Datenbank und, wie das Statusfeld es tut, in der Liste des Fensters."""
+    i, z = next((i, z) for i, z in enumerate(f.model.zeilen) if z.result.name == name)
+    st = f.statusbuch.setzen(z.result.url, status, notiz, (date.today() - timedelta(days=tage_zurueck)).isoformat())
+    f.model.status_aktualisieren(i, st)
+
+
+def _zeile_von(f, name):
+    return next(z for z in f.model.zeilen if z.result.name == name)
+
+
+# --- Ortsauswahl nach Bundesland -------------------------------------------------------------------
+
+
+def test_orte_stehen_unter_ihrem_bundesland(lf):
+    e = _eintraege(lf.f_ort)
+    texte = [t for t, _ in e]
+    assert texte[0] == "alle Orte"
+    ni = texte.index("Niedersachsen  (5)")
+    rp = texte.index("Rheinland-Pfalz  (4)")
+    bw = texte.index("Baden-Württemberg  (1)")
+    assert bw < ni < rp, "Bundeslaender alphabetisch"
+    assert texte[ni + 1:rp] == ["Hannover", "Lüneburg", "Neuenkirchen", "Osnabrück"]
+    assert texte[rp + 1:rp + 5] == ["Ahrweiler", "Mainz", "Manderscheid", "Neuenkirchen"]
+
+
+def test_ueberschriften_und_orte_sind_unterscheidbar(lf):
+    for text, ebene in _eintraege(lf.f_ort)[1:]:
+        assert ebene in ("land", "ort"), text
+    land_eintraege = [t for t, e in _eintraege(lf.f_ort) if e == "land"]
+    assert land_eintraege[0].startswith("Baden-Württemberg")
+
+
+def test_ueberschrift_ist_fett_und_farbig(lf):
+    m = lf.f_ort.model()
+    kopf = next(m.item(i) for i in range(m.rowCount()) if m.item(i).data(gui.EBENE) == "land")
+    assert kopf.font().bold()
+    assert kopf.foreground().color().name().lower() == gui.ACCENT.lower()
+
+
+def test_firmen_ohne_bundesland_stehen_ganz_unten(lf):
+    e = _eintraege(lf.f_ort)
+    assert e[-2] == ("Ohne Bundesland  (1)", "land")
+    assert e[-1] == ("Irgendwo", "ort")
+
+
+def test_umlaute_sortieren_in_der_ortsauswahl_richtig(lf):
+    texte = [t for t, _ in _eintraege(lf.f_ort)]
+    assert texte.index("Hannover") < texte.index("Lüneburg") < texte.index("Osnabrück")
+    # Überlingen steht als einziger Ort unter Baden-Württemberg
+    bw = texte.index("Baden-Württemberg  (1)")
+    assert texte[bw + 1] == "Überlingen"
+
+
+def test_ueberschrift_waehlen_filtert_das_ganze_land(lf):
+    lf.f_ort.setCurrentIndex(lf.f_ort.findData(gui.ort_schluessel("DE-NI")))
+    assert set(_namen(lf)) == {"Hann", "Luene", "Osna", "OhneOrt", "NkNI"}, "auch die Firma ohne Ortsangabe"
+
+
+def test_ort_waehlen_filtert_auf_land_und_ort(lf):
+    lf.f_ort.setCurrentIndex(lf.f_ort.findData(gui.ort_schluessel("DE-RP", "Neuenkirchen")))
+    assert _namen(lf) == ["NkRP"], "gleichnamiger Ort in Niedersachsen bleibt draussen"
+    lf.f_ort.setCurrentIndex(lf.f_ort.findData(gui.ort_schluessel("DE-NI", "Neuenkirchen")))
+    assert _namen(lf) == ["NkNI"]
+
+
+def test_ohne_bundesland_waehlen_zeigt_die_unzugeordneten(lf):
+    lf.f_ort.setCurrentIndex(lf.f_ort.findData(gui.ort_schluessel("")))
+    assert _namen(lf) == ["Irgend"]
+
+
+def test_alle_orte_zeigt_alles(lf):
+    lf.f_ort.setCurrentIndex(lf.f_ort.findData(gui.ort_schluessel("DE-RP")))
+    lf.f_ort.setCurrentIndex(0)
+    assert lf.proxy.rowCount() == 11
+
+
+def test_auswahl_der_ortsauswahl_bleibt_beim_neuaufbau_erhalten(lf):
+    lf.f_ort.setCurrentIndex(lf.f_ort.findData(gui.ort_schluessel("DE-RP", "Mainz")))
+    lf._ort_neu_aufbauen([z.result for z in lf.model.zeilen])
+    assert lf.f_ort.currentData() == gui.ort_schluessel("DE-RP", "Mainz")
+
+
+def test_ort_schluessel_laesst_sich_umkehren():
+    assert gui.ort_zerlegen(gui.ort_schluessel("DE-NI", "Bad Harzburg")) == ("DE-NI", "Bad Harzburg")
+    assert gui.ort_zerlegen(gui.ort_schluessel("", "")) == ("-", "")
+    assert gui.ort_zerlegen("") == ("", "")
+
+
+def test_land_wird_aus_der_csv_gelesen(lf):
+    assert _zeile_von(lf, "Mand").result.bundesland == "DE-RP"
+    assert _zeile_von(lf, "Irgend").result.bundesland == ""
+
+
+def test_land_kommt_aus_dem_landbuch_wenn_die_csv_keins_hat(app, tmp_path, einstellungen):
+    """Aeltere Listen haben keine Bundesland-Spalte; die Zuordnung steht in der Datenbank."""
+    db, csv = tmp_path / "db.sqlite", tmp_path / "l.csv"
+    csv.write_text("name,url,ort\nAlt,alt.de,Hannover\n", encoding="utf-8")
+    Cache(db).put(Result("Alt", "alt.de", "Hannover", "", "", "ok", 50.0, "", [], [], {}, "t"), False)
+    lb = Landbuch(db)
+    lb.setzen_viele({"alt.de": "DE-NI"})
+    lb.close()
+    f = gui.Fenster(csv, db, einstellungen)
+    assert f.leads[0].bundesland == "DE-NI"
+    assert f.model.zeile(0).result.bundesland == "DE-NI"
+    assert "Niedersachsen  (1)" in [t for t, _ in _eintraege(f.f_ort)]
+    f.statusbuch.close()
+    f.landbuch.close()
+
+
+# --- Aussortieren: "nicht passend" ----------------------------------------------------------------
+
+
+def _aussortieren(f, name):
+    f.tabelle.selectRow(next(r for r in range(f.proxy.rowCount()) if f.proxy.index(r, gui.S_FIRMA).data() == name))
+    f.ed_status.setCurrentText("nicht passend")
+
+
+def test_nicht_passend_entfernt_die_firma_sofort_aus_der_liste(lf):
+    assert "Mainz" in _namen(lf)
+    _aussortieren(lf, "Mainz")
+    assert "Mainz" not in _namen(lf)
+    assert lf.proxy.rowCount() == 10
+
+
+def test_aussortierte_firma_bleibt_als_sperrliste_gespeichert(lf):
+    _aussortieren(lf, "Mainz")
+    assert Statusbuch.key("mainz.de") in lf.statusbuch.aussortierte()
+    assert lf.statusbuch.get("mainz.de").status == "nicht passend"
+
+
+def test_zaehler_rechnet_aussortierte_nicht_mit(lf):
+    assert lf.lbl_anzahl.text() == "11 von 11"
+    _aussortieren(lf, "Mainz")
+    assert lf.lbl_anzahl.text() == "10 von 10"
+
+
+def test_nach_dem_aussortieren_ist_die_naechste_firma_markiert(lf):
+    _aussortieren(lf, "Mainz")
+    z = lf.aktuelle_zeile()
+    assert z is not None and z.result.name != "Mainz"
+
+
+def test_ortsauswahl_zaehlt_aussortierte_nicht_mehr(lf):
+    _aussortieren(lf, "Mainz")
+    lf._ort_neu_aufbauen([z.result for z in lf.model.zeilen])
+    texte = [t for t, _ in _eintraege(lf.f_ort)]
+    assert "Rheinland-Pfalz  (3)" in texte
+    assert "Mainz" not in texte, "ein Ort ohne offene Firmen steht nicht mehr zur Wahl"
+
+
+def test_rueckgaengig_macht_das_aussortieren_ungeschehen(lf):
+    lf.tabelle.selectRow(0)
+    name = lf.aktuelle_zeile().result.name
+    lf.ed_notiz.setPlainText("Rueckruf Montag")
+    lf.status_speichern()
+    lf.ed_status.setCurrentText("nicht passend")
+    assert name not in _namen(lf)
+    assert not lf.btn_rueckgaengig.isHidden()
+    lf.rueckgaengig()
+    assert name in _namen(lf)
+    assert lf.btn_rueckgaengig.isHidden()
+    st = lf.statusbuch.get(_zeile_von(lf, name).result.url)
+    assert st.status != "nicht passend"
+    assert st.notiz == "Rueckruf Montag", "die Notiz von vorher ist wieder da"
+
+
+def test_rueckgaengig_ohne_vorgang_tut_nichts(lf):
+    lf.rueckgaengig()
+    assert lf.proxy.rowCount() == 11
+
+
+def test_rueckgaengig_knopf_verschwindet_nach_der_frist(lf):
+    _aussortieren(lf, "Mainz")
+    assert not lf.btn_rueckgaengig.isHidden()
+    lf._rueckgaengig_ausblenden()
+    assert lf.btn_rueckgaengig.isHidden()
+
+
+def test_aussortierte_sind_ueber_den_akquise_filter_auffindbar(lf):
+    _aussortieren(lf, "Mainz")
+    lf.f_akquise.setCurrentIndex(lf.f_akquise.findData("nicht passend"))
+    assert _namen(lf) == ["Mainz"]
+
+
+def test_menue_aussortierte_zeigen(lf):
+    _aussortieren(lf, "Mainz")
+    lf.aussortierte_zeigen()
+    assert _namen(lf) == ["Mainz"]
+
+
+def test_mehrere_aussortieren_hintereinander(lf):
+    for name in ("Hann", "Osna", "Luene"):
+        _aussortieren(lf, name)
+    assert not {"Hann", "Osna", "Luene"} & set(_namen(lf))
+    assert lf.lbl_anzahl.text() == "8 von 8"
+
+
+def test_lauf_ueberspringt_aussortierte(lf, monkeypatch):
+    erhalten = []
+
+    class FalscherLauf:
+        def __init__(self, leads, args, key):
+            erhalten.append([l.name for l in leads])
+            self.fortschritt = self.fertig = self.fehlgeschlagen = self.finished = type(
+                "S", (), {"connect": lambda s, f: None})()
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(gui, "LaufThread", FalscherLauf)
+    _aussortieren(lf, "Mainz")
+    lf.lauf_starten()
+    assert erhalten and "Mainz" not in erhalten[0] and len(erhalten[0]) == 10
+    lf.lauf = None
+
+
+def test_lauf_ohne_aktive_firmen_meldet_das_und_startet_nicht(lf, monkeypatch):
+    gemeldet = []
+    monkeypatch.setattr(gui.QMessageBox, "information", lambda *a, **k: gemeldet.append(a[1]))
+    monkeypatch.setattr(gui, "LaufThread", lambda *a, **k: pytest.fail("kein Lauf ohne Firmen"))
+    for z in lf.model.zeilen:
+        lf.statusbuch.setzen(z.result.url, "nicht passend")
+    lf.lauf_starten()
+    assert gemeldet == ["Nichts zu prüfen"]
+
+
+# --- Firmensuche und Sperrliste ----------------------------------------------------------------
+
+
+def _suche_mit(lf, monkeypatch, firmen):
+    class Dialog(gui.SuchDialog):
+        def exec(self):
+            self.firmen = firmen
+            return gui.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(gui, "SuchDialog", Dialog)
+    monkeypatch.setattr(gui.QMessageBox, "information", lambda *a, **k: None)
+    lf.firmen_suchen()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+
+def test_neue_firmen_tragen_ihr_bundesland_in_liste_csv_und_landbuch(lf, monkeypatch):
+    _suche_mit(lf, monkeypatch, [gui.finden.Firma("Neu", "neu.de", ort="Kiel", bundesland="DE-SH")])
+    neu = next(l for l in lf.leads if l.name == "Neu")
+    assert neu.bundesland == "DE-SH"
+    assert lf.landbuch.alle()["neu.de"] == "DE-SH"
+    assert "Schleswig-Holstein" in lf.csv_pfad.read_text(encoding="utf-8")
+    assert audit.read_leads(lf.csv_pfad)[-1].bundesland == "DE-SH", "die gespeicherte CSV ist wieder lesbar"
+
+
+def test_suche_traegt_das_land_fuer_vorhandene_firmen_nach(lf, monkeypatch):
+    """Eine Firma, die schon ohne Land in der Liste stand, bekommt es bei einer erneuten Suche."""
+    _suche_mit(lf, monkeypatch, [gui.finden.Firma("Irgend", "irgend.de", ort="Irgendwo", bundesland="DE-HE")])
+    assert next(l for l in lf.leads if l.name == "Irgend").bundesland == "DE-HE"
+    assert lf.landbuch.alle()["irgend.de"] == "DE-HE"
+    assert sum(1 for l in lf.leads if l.name == "Irgend") == 1, "nicht doppelt"
+
+
+def test_aussortierte_firma_wird_von_einer_suche_nicht_wieder_angeboten(lf, monkeypatch):
+    _aussortieren(lf, "Mainz")
+    vorher = len(lf.leads)
+    _suche_mit(lf, monkeypatch, [gui.finden.Firma("Mainz", "mainz.de", ort="Mainz", bundesland="DE-RP")])
+    assert len(lf.leads) == vorher
+    assert "Mainz" not in _namen(lf)
+
+
+def test_gesperrte_firma_ist_auch_nach_neustart_aussortiert(app, tmp_path, einstellungen, lf):
+    _aussortieren(lf, "Mainz")
+    lf.statusbuch.close()
+    lf.landbuch.close()
+    f2 = gui.Fenster(lf.csv_pfad, lf.db_pfad, einstellungen)
+    assert "Mainz" not in _namen(f2)
+    f2.statusbuch.close()
+    f2.landbuch.close()
+
+
+def test_suchdialog_gibt_das_land_an_das_gebiet(app):
+    d = gui.SuchDialog()
+    d.cb_land.setCurrentIndex(d.cb_land.findData("DE-NI"))
+    assert d.gebiet().land == "DE-NI"
+    d.cb_kreis.setCurrentIndex(1)
+    assert d.gebiet().land == "DE-NI", "auch bei einem einzelnen Kreis"
+    d.cb_land.setCurrentIndex(0)
+    d.cb_schnell.setCurrentIndex(d.cb_schnell.findData("vulkaneifel"))
+    assert d.gebiet().land == "DE-RP"
+    d._uhr.stop()
+    d.deleteLater()
+
+
+# --- Wiedervorlage: Anzeige und Erinnerung -----------------------------------------------------
+
+
+@pytest.mark.parametrize("tage, text", [(0, "heute"), (-2, "heute"), (1, "seit gestern"), (3, "seit 3 Tagen"), (30, "seit 30 Tagen")])
+def test_faelligkeit_in_klartext(tage, text):
+    assert gui.faellig_text((date.today() - timedelta(days=tage)).isoformat()) == text
+
+
+def test_faelligkeit_mit_kaputtem_datum_kippt_nicht():
+    assert gui.faellig_text("kein Datum") == "kein Datum"
+
+
+def test_ohne_faellige_wiedervorlage_keine_anzeige_und_keine_erinnerung(lf, desktop_meldungen):
+    lf.wv_pruefen(True)
+    assert lf.btn_faellig.isHidden()
+    assert lf._wv_dialog is None
+    assert desktop_meldungen == []
+
+
+def test_faellige_wiedervorlage_zeigt_den_knopf_in_der_statusleiste(lf):
+    _faellig(lf, "Hann", 2)
+    _faellig(lf, "Mainz", 1)
+    lf.wv_pruefen(False)
+    assert not lf.btn_faellig.isHidden()
+    assert "2 Wiedervorlagen fällig" in lf.btn_faellig.text()
+
+
+def test_eine_einzelne_wiedervorlage_steht_im_singular(lf):
+    _faellig(lf, "Hann", 1)
+    lf.wv_pruefen(False)
+    assert "1 Wiedervorlage fällig" in lf.btn_faellig.text()
+    assert "Wiedervorlagen" not in lf.btn_faellig.text()
+
+
+def test_erinnerung_zeigt_liste_und_desktop_meldung(lf, desktop_meldungen):
+    _faellig(lf, "Hann", 3, notiz="Rueckruf Chef")
+    lf.wv_pruefen(True)
+    assert lf._wv_dialog is not None
+    assert lf._wv_dialog.tabelle.rowCount() == 1
+    zeile = [lf._wv_dialog.tabelle.item(0, c).text() for c in range(5)]
+    assert zeile[0] == "Hann" and zeile[1] == "Hannover" and zeile[2] == "seit 3 Tagen"
+    assert "Rueckruf Chef" in zeile[4]
+    assert desktop_meldungen and "Wiedervorlage fällig" in desktop_meldungen[0][0]
+    assert "Hann" in desktop_meldungen[0][1]
+
+
+def test_erinnerung_kommt_hoechstens_einmal_am_tag(lf, desktop_meldungen):
+    _faellig(lf, "Hann", 1)
+    lf.wv_pruefen(True)
+    lf._wv_dialog.close()
+    lf._wv_dialog = None
+    lf.wv_pruefen(True)
+    lf.wv_pruefen(True)
+    assert lf._wv_dialog is None, "der Minutentakt darf nicht jede Minute stoeren"
+    assert len(desktop_meldungen) == 1
+
+
+def test_erinnerung_kommt_am_naechsten_tag_wieder(lf, desktop_meldungen):
+    _faellig(lf, "Hann", 1)
+    lf.wv_pruefen(True)
+    lf._wv_dialog.close()
+    lf._wv_dialog = None
+    lf._wv_zuletzt = (date.today() - timedelta(days=1)).isoformat()  # "gestern wurde erinnert"
+    lf.wv_pruefen(True)
+    assert lf._wv_dialog is not None
+    assert len(desktop_meldungen) == 2
+
+
+def test_selbst_gesetzte_wiedervorlage_loest_keine_erinnerung_aus(lf, desktop_meldungen):
+    """Wer gerade "heute" einstellt, weiss davon. Nur die Anzeige in der Statusleiste aktualisiert sich."""
+    lf.tabelle.selectRow(0)
+    lf.chk_wv.setChecked(True)
+    lf.ed_wv.setDate(gui.QDate.currentDate())
+    lf.ed_status.setCurrentText("wiedervorlage")
+    assert not lf.btn_faellig.isHidden()
+    assert lf._wv_dialog is None
+    assert desktop_meldungen == []
+
+
+def test_mehrere_faellige_nennen_die_anzahl_in_der_meldung(lf, desktop_meldungen):
+    for n in ("Hann", "Osna", "Mainz"):
+        _faellig(lf, n, 2)
+    lf.wv_pruefen(True)
+    assert desktop_meldungen[0][0] == "3 Wiedervorlagen fällig"
+    assert "und 2 weitere" in desktop_meldungen[0][1]
+
+
+def test_erledigte_faelle_erscheinen_nicht_in_der_erinnerung(lf, desktop_meldungen):
+    _faellig(lf, "Hann", 2, status="kein Interesse")
+    _faellig(lf, "Osna", 2, status="kunde")
+    lf.wv_pruefen(True)
+    assert lf.btn_faellig.isHidden() and desktop_meldungen == []
+
+
+def test_aussortieren_loescht_auch_die_erinnerung(lf):
+    _faellig(lf, "Mainz", 2)
+    lf.wv_pruefen(False)
+    assert not lf.btn_faellig.isHidden()
+    _aussortieren(lf, "Mainz")
+    assert lf.btn_faellig.isHidden(), "aussortiert = erledigt, nichts mehr, woran zu erinnern waere"
+
+
+def test_aelteste_wiedervorlage_steht_oben(lf):
+    _faellig(lf, "Hann", 1)
+    _faellig(lf, "Osna", 9)
+    _faellig(lf, "Mainz", 4)
+    assert [e["firma"] for e in lf._faellige()] == ["Osna", "Mainz", "Hann"]
+
+
+def test_doppelklick_in_der_erinnerung_springt_zur_firma(lf):
+    _faellig(lf, "Osna", 2)
+    lf.wv_pruefen(True)
+    lf.f_ort.setCurrentIndex(lf.f_ort.findData(gui.ort_schluessel("DE-RP")))  # Filter, der Osna verdeckt
+    lf._wv_dialog.tabelle.cellDoubleClicked.emit(0, 0)
+    assert lf.f_ort.currentIndex() == 0, "Filter zurueckgesetzt"
+    assert lf.aktuelle_zeile().result.name == "Osna"
+
+
+def test_nur_faellige_zeigen_setzt_andere_filter_zurueck(lf):
+    _faellig(lf, "Mainz", 1)
+    lf.f_ort.setCurrentIndex(lf.f_ort.findData(gui.ort_schluessel("DE-NI")))
+    lf.f_suche.setText("xyz")
+    lf.nur_faellige_zeigen()
+    assert _namen(lf) == ["Mainz"]
+    assert lf.f_suche.text() == ""
+
+
+def test_klick_auf_den_knopf_zeigt_die_faelligen(lf):
+    _faellig(lf, "Hann", 1)
+    lf.wv_pruefen(False)
+    lf.btn_faellig.click()
+    assert _namen(lf) == ["Hann"]
+
+
+def test_knopf_in_der_erinnerung_zeigt_nur_faellige(lf):
+    _faellig(lf, "Hann", 1)
+    lf.wv_pruefen(True)
+    lf._wv_dialog._alle()
+    assert _namen(lf) == ["Hann"]
+
+
+def test_neue_erinnerung_ersetzt_die_alte_statt_sich_zu_stapeln(lf):
+    _faellig(lf, "Hann", 1)
+    lf.wv_pruefen(True)
+    erste = lf._wv_dialog
+    lf._wv_zuletzt = ""
+    lf.wv_pruefen(True)
+    assert lf._wv_dialog is not erste
+
+
+def test_menue_akquise_hat_die_beiden_eintraege(lf):
+    menues = {a.text().replace("&", ""): a.menu() for a in lf.menuBar().actions()}
+    assert "Akquise" in menues
+    texte = [a.text() for a in menues["Akquise"].actions()]
+    assert "Fällige Wiedervorlagen anzeigen" in texte
+    assert "Aussortierte Firmen anzeigen" in texte
+
+
+def test_erinnerungs_zeitgeber_laeuft_im_minutentakt(lf):
+    assert lf._wv_uhr.isActive() and lf._wv_uhr.interval() == 60_000
+
+
+# --- Desktop-Meldung ----------------------------------------------------------------------------------------
+
+
+def test_desktop_hinweis_ruft_notify_send_auf(monkeypatch):
+    aufrufe = []
+    monkeypatch.undo()  # den Rekorder der autouse-Fixture wieder abnehmen
+    monkeypatch.setattr(gui.shutil, "which", lambda n: "/usr/bin/notify-send")
+    monkeypatch.setattr(gui.subprocess, "Popen", lambda cmd, **k: aufrufe.append(cmd))
+    assert gui.desktop_hinweis("Titel", "Text") is True
+    assert aufrufe[0][0] == "/usr/bin/notify-send"
+    assert aufrufe[0][-2:] == ["Titel", "Text"]
+
+
+def test_desktop_hinweis_ohne_notify_send_ist_kein_fehler(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(gui.shutil, "which", lambda n: None)
+    assert gui.desktop_hinweis("Titel", "Text") is False
+
+
+def test_desktop_hinweis_faengt_fehler_beim_start_ab(monkeypatch):
+    monkeypatch.undo()
+    monkeypatch.setattr(gui.shutil, "which", lambda n: "/usr/bin/notify-send")
+
+    def kaputt(*a, **k):
+        raise OSError("weg")
+
+    monkeypatch.setattr(gui.subprocess, "Popen", kaputt)
+    assert gui.desktop_hinweis("Titel", "Text") is False
+
+
+def test_fenster_schliesst_das_landbuch(lf):
+    lf.closeEvent(QCloseEvent())
+    with pytest.raises(Exception):
+        lf.landbuch.alle()
+    lf.statusbuch = gui.Statusbuch(lf.db_pfad)  # fuer das Aufraeumen der Fixture
+    lf.landbuch = gui.Landbuch(lf.db_pfad)

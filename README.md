@@ -107,6 +107,38 @@ Was das Tempo bringt, ohne die Höflichkeit zu lockern:
 Bei sehr hoher Parallelität (> 60) lohnt ein Blick auf die eigene Leitung. Wer
 die frühere Vorsicht will: `--concurrency 10`.
 
+## Akquise-Arbeit in der Oberfläche
+
+**Orte nach Bundesland.** Die Ortsauswahl oben gruppiert die Orte unter ihrem Bundesland
+(Überschrift mit Firmenzahl, darunter die Orte alphabetisch mit deutscher
+Umlautregel). Die Überschrift ist selbst wählbar und zeigt dann das ganze Land,
+auch Firmen ohne Ortsangabe. Gleichnamige Orte in verschiedenen Ländern
+(„Neuenkirchen") bleiben getrennt. Firmen ohne bekanntes Land stehen unter „Ohne
+Bundesland" ganz unten.
+
+Das Land kommt aus dem Suchgebiet: Wer in Niedersachsen sucht, dessen Treffer sind
+Niedersachsen. Es steht als Spalte `bundesland` in der CSV. Für Listen ohne diese
+Spalte hält die Datenbank die Zuordnung (Tabelle `lead_land`), sodass auch ältere
+Programmstände die Liste unbeschadet weiterschreiben können. Sucht man ein
+Gebiet erneut, bekommen schon vorhandene Firmen ohne Land es dabei nachgetragen.
+
+**Wiedervorlage mit Erinnerung.** Beim Start und danach höchstens einmal am Tag
+(wenn das Programm über Nacht offen bleibt, am nächsten Morgen) erscheint eine
+Liste der fälligen Wiedervorlagen, dazu eine Desktop-Meldung (`notify-send`). In der
+Statusleiste steht dauerhaft „⚑ n Wiedervorlagen fällig"; ein Klick zeigt sie in
+der Liste, ebenso *Akquise → Fällige Wiedervorlagen anzeigen* (Strg+Umschalt+W).
+Doppelklick in der Erinnerung springt zur Firma. Wer eine Wiedervorlage gerade selbst
+auf „heute" setzt, bekommt keine Erinnerung daran, nur die Anzeige aktualisiert sich.
+Erledigte Fälle (Kunde, kein Interesse, nicht passend) erinnern nicht mehr. Die
+Erinnerung gibt es nur, solange das Programm läuft.
+
+**„nicht passend" sortiert aus.** Die Firma verschwindet sofort aus der Liste, ein
+Knopf in der Statusleiste („↩ … zurückholen") macht es 15 Sekunden lang rückgängig.
+Der Status bleibt als Sperrliste gespeichert: Aussortierte werden nicht mehr
+geprüft (GUI und Kommandozeile) und von einer späteren Firmensuche nicht erneut
+angeboten. Nichts wird gelöscht; *Akquise → Aussortierte Firmen anzeigen* (oder der
+Akquise-Filter „nicht passend") zeigt sie, und ein anderer Status holt sie zurück.
+
 ## Firmen finden
 
 Das Tool bewertet nicht nur eine fertige Liste, es findet auch Firmen. Quelle ist
@@ -290,7 +322,7 @@ Branche kommen immer frisch aus der CSV, nur die Bewertung stammt aus dem Cache.
 ./venv/bin/python -m pytest
 ```
 
-457 Tests gegen gespeicherte HTML-Fixtures in [tests/fixtures/](tests/fixtures/) —
+592 Tests gegen gespeicherte HTML-Fixtures in [tests/fixtures/](tests/fixtures/) —
 kein Netzzugriff. Abgedeckt sind die Score-Logik (Kombination, Normierung,
 Argumentbau), alle Checks, die Parser für Bildmaße, Telefonnummern und
 Copyright-Jahre, Rate-Limit, Cache, Statusbuch und Ausgabe sowie die GUI
@@ -303,6 +335,7 @@ Copyright-Jahre, Rate-Limit, Cache, Statusbuch und Ausgabe sowie die GUI
 | [audit.py](audit.py) | Prüflogik und CLI, Gewichte ganz oben |
 | [finden.py](finden.py) | Firmensuche (OpenStreetMap) und Kreislisten |
 | [kreise_de.json](kreise_de.json) | mitgelieferte Kreisliste aller Bundesländer |
+| [laender.py](laender.py) | die 16 Bundesländer: Namen, Schlüssel, Umrechnungen |
 | [gui.py](gui.py) | Qt-Oberfläche (PySide6) |
 | [install-desktop.sh](install-desktop.sh) | Menü- und Taskleisteneintrag anlegen |
 | [desktop/](desktop/) | Vorlage für den `.desktop`-Eintrag |

@@ -13,6 +13,8 @@ import gc
 import threading
 import time
 import os
+import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -42,6 +44,8 @@ from PySide6.QtGui import (
     QDesktopServices,
     QFont,
     QIcon,
+    QStandardItem,
+    QStandardItemModel,
     QKeySequence,
     QPainter,
     QPalette,
@@ -71,6 +75,8 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStyledItemDelegate,
     QTableView,
+    QTableWidget,
+    QTableWidgetItem,
     QTabWidget,
     QTextBrowser,
     QVBoxLayout,
@@ -80,7 +86,8 @@ from PySide6.QtWidgets import (
 import audit
 import finden
 import kontaktsuche
-from audit import Cache, Lead, LeadStatus, Result, Statusbuch
+from audit import STATUS_AUSSORTIERT, Cache, Landbuch, Lead, LeadStatus, Result, Statusbuch
+from laender import OHNE_LAND_TITEL, land_name, sortierschluessel
 
 # Farben passend zum HTML-Report
 BG = "#11151c"
@@ -476,8 +483,8 @@ class SuchDialog(QDialog):
             return None
         kreis_id = self.cb_kreis.currentData()
         if kreis_id:
-            return finden.Region(self.cb_kreis.currentText(), finden.kreis_filter(kreis_id))
-        return finden.Region(finden.BUNDESLAENDER[iso], finden.land_filter(iso))
+            return finden.Region(self.cb_kreis.currentText(), finden.kreis_filter(kreis_id), iso)
+        return finden.Region(finden.BUNDESLAENDER[iso], finden.land_filter(iso), iso)
 
     def gewaehlte_branchen(self) -> list[str]:
         return [k for k, sch in self.branchen.items() if sch.isChecked()]
@@ -540,6 +547,117 @@ class SuchDialog(QDialog):
             self.lbl_stand.setText("Keine Betriebe mit hinterlegter Website gefunden.")
             return
         self.accept()
+
+
+# ---------------------------------------------------------------------------
+# Wiedervorlage: Erinnerung
+# ---------------------------------------------------------------------------
+
+
+def desktop_hinweis(titel: str, text: str) -> bool:
+    """Meldung des Desktops (notify-send), falls vorhanden. Bricht nie ab: eine
+    fehlende Benachrichtigung darf die Anwendung nicht stoeren."""
+    exe = shutil.which("notify-send")
+    if not exe:
+        return False
+    try:
+        subprocess.Popen(
+            [exe, "-a", "site-audit", "-i", "site-audit", titel, text],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+        return True
+    except OSError:
+        return False
+
+
+def faellig_text(datum_iso: str, heute: date | None = None) -> str:
+    """"heute", "seit gestern", "seit 3 Tagen" fuer eine Wiedervorlage."""
+    heute = heute or date.today()
+    try:
+        tage = (heute - date.fromisoformat(datum_iso)).days
+    except ValueError:
+        return datum_iso
+    if tage <= 0:
+        return "heute"
+    return "seit gestern" if tage == 1 else f"seit {tage} Tagen"
+
+
+class WiedervorlageDialog(QDialog):
+    """Faellige Wiedervorlagen als Liste. Doppelklick springt zur Firma."""
+
+    zeigen = Signal(str)  # url_key der Firma
+    alle_zeigen = Signal()
+
+    def __init__(self, eintraege: list[dict], parent=None) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Wiedervorlage")
+        self.setMinimumSize(820, 330)
+        self.eintraege = eintraege
+
+        lay = QVBoxLayout(self)
+        n = len(eintraege)
+        kopf = QLabel("Eine Wiedervorlage ist fällig" if n == 1 else f"{n} Wiedervorlagen sind fällig")
+        kopf.setStyleSheet("font-size: 17px; font-weight: 600;")
+        lay.addWidget(kopf)
+        lay.addWidget(QLabel("Doppelklick auf eine Zeile zeigt die Firma in der Liste."))
+
+        self.tabelle = QTableWidget(n, 5)
+        self.tabelle.setHorizontalHeaderLabels(["Firma", "Ort", "Fällig", "Telefon", "Notiz"])
+        self.tabelle.verticalHeader().setVisible(False)
+        self.tabelle.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tabelle.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.tabelle.horizontalHeader().setStretchLastSection(True)
+        for i, e in enumerate(eintraege):
+            for j, wert in enumerate((e["firma"], e["ort"], faellig_text(e["datum"]), e["telefon"], e["notiz"])):
+                self.tabelle.setItem(i, j, QTableWidgetItem(wert))
+        self.tabelle.resizeColumnsToContents()
+        self.tabelle.cellDoubleClicked.connect(self._doppelklick)
+        lay.addWidget(self.tabelle, 1)
+
+        knoepfe = QHBoxLayout()
+        knoepfe.addStretch(1)
+        zu = QPushButton("Schließen")
+        zu.clicked.connect(self.close)
+        knoepfe.addWidget(zu)
+        alle = QPushButton("Nur fällige in der Liste zeigen")
+        alle.setObjectName("start")
+        alle.clicked.connect(self._alle)
+        knoepfe.addWidget(alle)
+        lay.addLayout(knoepfe)
+
+    def _doppelklick(self, zeile: int, _spalte: int) -> None:
+        self.zeigen.emit(self.eintraege[zeile]["url_key"])
+
+    def _alle(self) -> None:
+        self.alle_zeigen.emit()
+        self.close()
+
+
+# ---------------------------------------------------------------------------
+# Ortsauswahl nach Bundesland
+# ---------------------------------------------------------------------------
+
+EBENE = Qt.ItemDataRole.UserRole + 5  # "land" fuer Ueberschriften, "ort" fuer Orte
+
+
+class OrtDelegate(QStyledItemDelegate):
+    """Rueckt die Orte unter ihrer Bundesland-Ueberschrift ein - nur in der aufgeklappten Liste."""
+
+    def initStyleOption(self, option, index) -> None:
+        super().initStyleOption(option, index)
+        if index.data(EBENE) == "ort":
+            option.text = "      " + option.text
+
+
+def ort_schluessel(land: str, ort: str = "") -> str:
+    """Datenwert eines Eintrags der Ortsauswahl: "DE-NI|Hannover", fuer "Land ohne Angabe" "-|"."""
+    return f"{land or '-'}|{ort}"
+
+
+def ort_zerlegen(daten: str) -> tuple[str, str]:
+    """Umkehrung von ort_schluessel(): (Land, Ort). Land "-" steht fuer "Ohne Bundesland"."""
+    land, _, ort = (daten or "").partition("|")
+    return land, ort
 
 
 # ---------------------------------------------------------------------------
@@ -731,6 +849,7 @@ class ScoreDelegate(QStyledItemDelegate):
 class LeadFilter(QSortFilterProxyModel):
     def __init__(self) -> None:
         super().__init__()
+        self.land = ""  # ISO-Code, "-" = ohne Bundesland, "" = alle
         self.ort = ""
         self.branche = ""
         self.akquise = ""
@@ -762,6 +881,16 @@ class LeadFilter(QSortFilterProxyModel):
         if z is None:
             return False
         r, st = z.result, z.status
+        # Aussortierte ("nicht passend") sind aus der Liste raus. Sichtbar werden sie nur,
+        # wenn man sie ausdruecklich ueber den Akquise-Filter sucht - etwa um eine
+        # versehentliche Entscheidung rueckgaengig zu machen.
+        if st.status == STATUS_AUSSORTIERT and self.akquise != STATUS_AUSSORTIERT:
+            return False
+        if self.land == "-":
+            if r.bundesland:
+                return False
+        elif self.land and r.bundesland != self.land:
+            return False
         if self.ort and r.ort != self.ort:
             return False
         if self.branche and r.branche != self.branche:
@@ -802,6 +931,10 @@ class Fenster(QMainWindow):
 
         self.db_pfad = db_pfad
         self.statusbuch = Statusbuch(db_pfad)
+        self.landbuch = Landbuch(db_pfad)
+        self._rueckgaengig: tuple[str, LeadStatus] | None = None
+        self._wv_dialog: WiedervorlageDialog | None = None
+        self._wv_zuletzt = ""  # Tag, an dem zuletzt erinnert wurde
         # Hereinreichbar, damit Tests nicht in die echten Einstellungen des
         # Benutzers schreiben. Die globale Umlenkung ueber
         # QSettings.setPath() greift unter Linux nicht, weil NativeFormat
@@ -837,6 +970,14 @@ class Fenster(QMainWindow):
         else:
             self.aus_cache_laden()
 
+        # Erinnerung an faellige Wiedervorlagen: beim Start und danach jede Minute geprueft,
+        # damit auch ein Programm, das ueber Nacht offen bleibt, am naechsten Morgen erinnert.
+        self._wv_uhr = QTimer(self)
+        self._wv_uhr.setInterval(60_000)
+        self._wv_uhr.timeout.connect(lambda: self.wv_pruefen(True))
+        self._wv_uhr.start()
+        QTimer.singleShot(1200, lambda: self.wv_pruefen(True))
+
     # --- Aufbau ------------------------------------------------------------
 
     def _baue_oberflaeche(self) -> None:
@@ -870,6 +1011,24 @@ class Fenster(QMainWindow):
             "einem Abruf pro Sekunde, die Zahl belastet keine einzelne Seite stärker."
         )
         self.sp_parallel.valueChanged.connect(lambda v: self.einstellungen.setValue("parallel", v))
+        # Wiedervorlage: Anzeige faelliger Eintraege, ein Klick zeigt sie in der Liste
+        self.btn_faellig = QPushButton("")
+        self.btn_faellig.setObjectName("faellig")
+        self.btn_faellig.setFlat(True)
+        self.btn_faellig.setVisible(False)
+        self.btn_faellig.setToolTip("Fällige Wiedervorlagen in der Liste zeigen")
+        self.btn_faellig.clicked.connect(self.nur_faellige_zeigen)
+        self.statusBar().addPermanentWidget(self.btn_faellig)
+
+        # Aussortieren laesst sich kurz rueckgaengig machen
+        self.btn_rueckgaengig = QPushButton("")
+        self.btn_rueckgaengig.setVisible(False)
+        self.btn_rueckgaengig.clicked.connect(self.rueckgaengig)
+        self.statusBar().addPermanentWidget(self.btn_rueckgaengig)
+        self._rueck_uhr = QTimer(self)
+        self._rueck_uhr.setSingleShot(True)
+        self._rueck_uhr.timeout.connect(self._rueckgaengig_ausblenden)
+
         self.statusBar().addPermanentWidget(self.sp_parallel)
 
         self.fortschritt = QProgressBar()
@@ -918,8 +1077,16 @@ class Fenster(QMainWindow):
 
         lay.addSpacing(16)
 
+        # Orte nach Bundesland gruppiert: die Ueberschrift ist selbst waehlbar und
+        # filtert dann das ganze Land.
         self.f_ort = QComboBox()
-        self.f_ort.addItem("alle Orte", "")
+        self._ort_modell = QStandardItemModel(self.f_ort)
+        self.f_ort.setModel(self._ort_modell)
+        self.f_ort.setItemDelegate(OrtDelegate(self.f_ort))
+        self.f_ort.setMaxVisibleItems(30)
+        self.f_ort.setMinimumWidth(220)
+        self.f_ort.view().setMinimumWidth(300)
+        self._ort_neu_aufbauen([])
         self.f_ort.currentIndexChanged.connect(self.filter_anwenden)
         lay.addWidget(self.f_ort)
 
@@ -1128,6 +1295,15 @@ class Fenster(QMainWindow):
         a.triggered.connect(self.close)
         datei.addAction(a)
 
+        akquise = self.menuBar().addMenu("&Akquise")
+        a = QAction("Fällige Wiedervorlagen anzeigen", self)
+        a.setShortcut(QKeySequence("Ctrl+Shift+W"))
+        a.triggered.connect(self.nur_faellige_zeigen)
+        akquise.addAction(a)
+        a = QAction("Aussortierte Firmen anzeigen", self)
+        a.triggered.connect(self.aussortierte_zeigen)
+        akquise.addAction(a)
+
         lauf = self.menuBar().addMenu("&Lauf")
         a = QAction("Prüfen starten", self)
         a.setShortcut(QKeySequence("Ctrl+R"))
@@ -1153,20 +1329,33 @@ class Fenster(QMainWindow):
 
         neue = [
             Lead(name=f.name, url=f.url, ort=f.ort, branche=f.branche,
-                 telefon=f.telefon, email=f.email)
+                 telefon=f.telefon, email=f.email, bundesland=f.bundesland)
             for f in gefunden
         ]
 
         # An eine offene Liste anhaengen statt sie zu ersetzen - so lassen
         # sich mehrere Kreise zu einer Arbeitsliste zusammentragen.
-        vorhanden = {audit.url_key(l.url) for l in self.leads}
-        dazu = [l for l in neue if audit.url_key(l.url) not in vorhanden]
+        vorhanden = {audit.url_key(l.url): l for l in self.leads}
+        gesperrt = self.statusbuch.aussortierte()  # als "nicht passend" aussortiert: nicht wieder anbieten
+        dazu = [l for l in neue if audit.url_key(l.url) not in vorhanden and audit.url_key(l.url) not in gesperrt]
+        # Die Suche kennt das Bundesland. Firmen, die schon ohne Land in der Liste standen,
+        # bekommen es dabei nachgetragen.
+        zuordnung = {l.url: l.bundesland for l in dazu if l.bundesland}
+        for l in neue:
+            alt = vorhanden.get(audit.url_key(l.url))
+            if alt is not None and not alt.bundesland and l.bundesland:
+                alt.bundesland = l.bundesland
+                zuordnung[alt.url] = l.bundesland
+        self.landbuch.setzen_viele(zuordnung)
         self.leads = self.leads + dazu
 
         ziel = self._leads_sichern()
         self.aus_cache_laden()
-        doppelt = len(neue) - len(dazu)
+        doppelt = sum(1 for l in neue if audit.url_key(l.url) in vorhanden)
+        aussortiert = sum(1 for l in neue if audit.url_key(l.url) in gesperrt and audit.url_key(l.url) not in vorhanden)
         nachsatz = f", {doppelt} schon in der Liste" if doppelt else ""
+        if aussortiert:
+            nachsatz += f", {aussortiert} bereits als „nicht passend“ aussortiert"
         self.statusBar().showMessage(
             f"{len(dazu)} Firmen übernommen{nachsatz}. Mit „Prüfen“ bewerten.", 12000
         )
@@ -1186,9 +1375,10 @@ class Fenster(QMainWindow):
         ziel = self.csv_pfad or (Path(__file__).resolve().parent / "leads.csv")
         with ziel.open("w", newline="", encoding="utf-8") as fh:
             w = _csv.writer(fh)
-            w.writerow(["name", "url", "ort", "branche", "telefon", "email"])
+            w.writerow(["name", "url", "ort", "branche", "telefon", "email", "bundesland"])
             for l in self.leads:
-                w.writerow([l.name, l.url, l.ort, l.branche, l.telefon, l.email])
+                w.writerow([l.name, l.url, l.ort, l.branche, l.telefon, l.email,
+                            land_name(l.bundesland) if l.bundesland else ""])
         self.csv_pfad = ziel
         self.einstellungen.setValue("letzte_csv", str(ziel.resolve()))
         self.setWindowTitle(f"site-audit — {ziel.name}")
@@ -1211,6 +1401,11 @@ class Fenster(QMainWindow):
         self.csv_pfad = pfad
         self.einstellungen.setValue("letzte_csv", str(pfad.resolve()))
         self.setWindowTitle(f"site-audit — {pfad.name}")
+        # Aeltere Listen haben keine Bundesland-Spalte: die Zuordnung steht dann im Landbuch
+        zuordnung = self.landbuch.alle()
+        for l in self.leads:
+            if not l.bundesland:
+                l.bundesland = zuordnung.get(audit.url_key(l.url), "")
         self.aus_cache_laden()
         self.statusBar().showMessage(
             f"{len(self.leads)} Leads aus {pfad.name} geladen. Noch nicht geprüfte Seiten mit „Prüfen“ abrufen."
@@ -1237,6 +1432,10 @@ class Fenster(QMainWindow):
 
     def ergebnisse_setzen(self, ergebnisse: list[Result]) -> None:
         alle = self.statusbuch.alle()
+        zuordnung = self.landbuch.alle()
+        for r in ergebnisse:
+            if not r.bundesland:
+                r.bundesland = zuordnung.get(Statusbuch.key(r.url), "")
         zeilen = [
             Zeile(r, alle.get(Statusbuch.key(r.url), LeadStatus(url_key=Statusbuch.key(r.url))))
             for r in ergebnisse
@@ -1249,24 +1448,67 @@ class Fenster(QMainWindow):
             self.tabelle.selectRow(0)
 
     def _filter_listen_fuellen(self, ergebnisse: list[Result]) -> None:
-        for box, werte in (
-            (self.f_ort, sorted({r.ort for r in ergebnisse if r.ort})),
-            (self.f_branche, sorted({r.branche for r in ergebnisse if r.branche})),
-        ):
-            vorher = box.currentData()
-            box.blockSignals(True)
-            box.clear()
-            box.addItem("alle Orte" if box is self.f_ort else "alle Branchen", "")
-            for w in werte:
-                box.addItem(w, w)
-            idx = box.findData(vorher)
-            box.setCurrentIndex(idx if idx >= 0 else 0)
-            box.blockSignals(False)
+        self._ort_neu_aufbauen(ergebnisse)
+        box = self.f_branche
+        vorher = box.currentData()
+        box.blockSignals(True)
+        box.clear()
+        box.addItem("alle Branchen", "")
+        for w in sorted({r.branche for r in ergebnisse if r.branche}):
+            box.addItem(w, w)
+        idx = box.findData(vorher)
+        box.setCurrentIndex(idx if idx >= 0 else 0)
+        box.blockSignals(False)
+
+    def _ort_neu_aufbauen(self, ergebnisse: list[Result]) -> None:
+        """Ortsauswahl: je Bundesland eine Ueberschrift, darunter die Orte alphabetisch.
+
+        Aussortierte Firmen zaehlen nicht mit - ihre Orte sollen nicht in der Auswahl
+        stehen, wenn dort nichts mehr zu tun ist.
+        """
+        gesperrt = self.statusbuch.aussortierte()
+        firmen: dict[str, int] = {}
+        orte: dict[str, set[str]] = {}
+        for r in ergebnisse:
+            if Statusbuch.key(r.url) in gesperrt:
+                continue
+            firmen[r.bundesland] = firmen.get(r.bundesland, 0) + 1
+            if r.ort:
+                orte.setdefault(r.bundesland, set()).add(r.ort)
+
+        box, modell = self.f_ort, self._ort_modell
+        vorher = box.currentData()
+        box.blockSignals(True)
+        modell.clear()
+
+        alle = QStandardItem("alle Orte")
+        alle.setData("", Qt.ItemDataRole.UserRole)
+        modell.appendRow(alle)
+
+        # Bundeslaender alphabetisch, "Ohne Bundesland" ganz unten
+        for iso in sorted(firmen, key=lambda i: (i == "", sortierschluessel(land_name(i)))):
+            kopf = QStandardItem(f"{land_name(iso)}  ({firmen[iso]:,})".replace(",", "."))
+            kopf.setData(ort_schluessel(iso), Qt.ItemDataRole.UserRole)
+            kopf.setData("land", EBENE)
+            schrift = QFont()
+            schrift.setBold(True)
+            kopf.setFont(schrift)
+            kopf.setForeground(QColor(ACCENT))
+            modell.appendRow(kopf)
+            for ort in sorted(orte.get(iso, ()), key=sortierschluessel):
+                zeile = QStandardItem(ort)
+                zeile.setData(ort_schluessel(iso, ort), Qt.ItemDataRole.UserRole)
+                zeile.setData("ort", EBENE)
+                modell.appendRow(zeile)
+
+        idx = box.findData(vorher, Qt.ItemDataRole.UserRole)
+        box.setCurrentIndex(idx if idx >= 0 else 0)
+        box.blockSignals(False)
 
     # --- Filter ------------------------------------------------------------
 
     def filter_anwenden(self) -> None:
-        self.proxy.ort = self.f_ort.currentData() or ""
+        self.proxy.land, self.proxy.ort = ort_zerlegen(self.f_ort.currentData() or "")
         self.proxy.branche = self.f_branche.currentData() or ""
         self.proxy.akquise = self.f_akquise.currentData() or ""
         self.proxy.schritt = self.f_schritt.currentData() or ""
@@ -1274,7 +1516,25 @@ class Fenster(QMainWindow):
         self.proxy.nur_faellig = self.chk_faellig.isChecked()
         self.proxy.suche = self.f_suche.text().strip().lower()
         self.proxy.invalidate()
-        self.lbl_anzahl.setText(f"{self.proxy.rowCount()} von {self.model.rowCount()}")
+        self._anzahl_zeigen()
+
+    def _anzahl_zeigen(self) -> None:
+        """"x von y": y ohne die aussortierten Firmen, die ja aus der Liste sind."""
+        gesamt = sum(1 for z in self.model.zeilen if z.status.status != STATUS_AUSSORTIERT)
+        self.lbl_anzahl.setText(f"{self.proxy.rowCount()} von {gesamt}")
+
+    def filter_zuruecksetzen(self) -> None:
+        """Alle Filter auf "alles zeigen" - bevor eine Sicht wie "faellig" gesetzt wird."""
+        for box in (self.f_ort, self.f_branche, self.f_schritt, self.f_akquise, self.f_min):
+            box.blockSignals(True)
+            box.setCurrentIndex(0)
+            box.blockSignals(False)
+        self.f_suche.blockSignals(True)
+        self.f_suche.clear()
+        self.f_suche.blockSignals(False)
+        self.chk_faellig.blockSignals(True)
+        self.chk_faellig.setChecked(False)
+        self.chk_faellig.blockSignals(False)
 
     # --- Auswahl und Detail ------------------------------------------------
 
@@ -1494,14 +1754,137 @@ class Fenster(QMainWindow):
         z = self.aktuelle_zeile()
         if z is None:
             return
+        vorher = z.status
         wv = self.ed_wv.date().toString("yyyy-MM-dd") if self.chk_wv.isChecked() else ""
         neu = self.statusbuch.setzen(
             z.result.url, self.ed_status.currentText(), self.ed_notiz.toPlainText().strip(), wv
         )
+        zeile_nr = self.tabelle.currentIndex().row()
         quelle = self.proxy.mapToSource(self.tabelle.currentIndex())
         self.model.status_aktualisieren(quelle.row(), neu)
         self.proxy.invalidate()
-        self.statusBar().showMessage(f"Status gespeichert: {z.result.name} → {neu.status}", 4000)
+        if neu.status == STATUS_AUSSORTIERT and vorher.status != STATUS_AUSSORTIERT:
+            self._aussortiert(z.result, vorher, zeile_nr)
+        else:
+            self.statusBar().showMessage(f"Status gespeichert: {z.result.name} → {neu.status}", 4000)
+        self._anzahl_zeigen()
+        self.wv_pruefen(False)
+
+    def _aussortiert(self, res: Result, vorher: LeadStatus, zeile_nr: int) -> None:
+        """"nicht passend": die Firma ist sofort aus der Liste. Der Status bleibt als Sperrliste
+        gespeichert, damit eine spaetere Suche sie nicht wieder anbietet; ein Knopf in der
+        Statusleiste macht den Schritt kurz rueckgaengig."""
+        self._rueckgaengig = (res.url, vorher)
+        self.btn_rueckgaengig.setText(f"↩  {res.name[:30]} zurückholen")
+        self.btn_rueckgaengig.setVisible(True)
+        self._rueck_uhr.start(15_000)
+        self.statusBar().showMessage(f"{res.name} aussortiert und aus der Liste entfernt.", 15_000)
+        if self.proxy.rowCount():
+            self.tabelle.selectRow(min(zeile_nr, self.proxy.rowCount() - 1))
+        else:
+            self.tabelle.clearSelection()
+            self.auswahl_geaendert()
+
+    def rueckgaengig(self) -> None:
+        if self._rueckgaengig is None:
+            return
+        url, vorher = self._rueckgaengig
+        self._rueckgaengig = None
+        self._rueck_uhr.stop()
+        self.btn_rueckgaengig.setVisible(False)
+        neu = self.statusbuch.setzen(url, vorher.status, vorher.notiz, vorher.wiedervorlage)
+        schluessel = Statusbuch.key(url)
+        for i, z in enumerate(self.model.zeilen):
+            if Statusbuch.key(z.result.url) == schluessel:
+                self.model.status_aktualisieren(i, neu)
+                break
+        self.proxy.invalidate()
+        self._ort_neu_aufbauen([z.result for z in self.model.zeilen])
+        self.filter_anwenden()
+        self._zu_firma(schluessel)
+        self.statusBar().showMessage("Wieder in der Liste.", 5000)
+        self.wv_pruefen(False)
+
+    def _rueckgaengig_ausblenden(self) -> None:
+        self.btn_rueckgaengig.setVisible(False)
+        self._rueckgaengig = None
+
+    def aussortierte_zeigen(self) -> None:
+        """Die aussortierten Firmen ansehen - und bei Bedarf wieder auf "offen" stellen."""
+        self.filter_zuruecksetzen()
+        self.f_akquise.setCurrentIndex(self.f_akquise.findData(STATUS_AUSSORTIERT))
+        self.filter_anwenden()
+
+    def _zu_firma(self, url_key: str) -> None:
+        """Firma in der Liste markieren, sofern sie unter den aktuellen Filtern sichtbar ist."""
+        for i, z in enumerate(self.model.zeilen):
+            if Statusbuch.key(z.result.url) == url_key:
+                idx = self.proxy.mapFromSource(self.model.index(i, 0))
+                if idx.isValid():
+                    self.tabelle.selectRow(idx.row())
+                    self.tabelle.scrollTo(idx)
+                return
+
+    # --- Wiedervorlage -------------------------------------------------------
+
+    def _faellige(self) -> list[dict]:
+        """Faellige Wiedervorlagen mit Firmendaten, aelteste zuerst."""
+        nach_schluessel = {Statusbuch.key(z.result.url): z.result for z in self.model.zeilen}
+        eintraege = []
+        for st in self.statusbuch.faellige_wiedervorlagen():
+            r = nach_schluessel.get(st.url_key)
+            eintraege.append({
+                "url_key": st.url_key,
+                "firma": r.name if r else st.url_key,
+                "ort": (r.ort if r else "") or "–",
+                "datum": st.wiedervorlage,
+                "telefon": (r.telefon if r else "") or "–",
+                "notiz": st.notiz.replace("\n", " ")[:120],
+            })
+        return eintraege
+
+    def wv_pruefen(self, erinnern: bool) -> None:
+        """Anzeige in der Statusleiste aktualisieren und - hoechstens einmal je Tag - erinnern.
+
+        Erinnert wird beim Start und, wenn das Programm ueber Nacht offen bleibt, am naechsten
+        Tag. Eine Wiedervorlage, die man gerade selbst auf "heute" setzt, loest keine
+        Erinnerung aus: wer sie eben eingetragen hat, weiss davon.
+        """
+        faellig = self._faellige()
+        n = len(faellig)
+        self.btn_faellig.setVisible(n > 0)
+        if n:
+            self.btn_faellig.setText(f"⚑  {n} Wiedervorlage{'' if n == 1 else 'n'} fällig")
+        heute = date.today().isoformat()
+        if not (erinnern and n and self._wv_zuletzt != heute):
+            return
+        self._wv_zuletzt = heute
+        self._wv_zeigen(faellig)
+        erste = faellig[0]
+        text = f"{erste['firma']} ({faellig_text(erste['datum'])})" + (f" und {n - 1} weitere" if n > 1 else "")
+        desktop_hinweis("Wiedervorlage fällig" if n == 1 else f"{n} Wiedervorlagen fällig", text)
+
+    def _wv_zeigen(self, faellig: list[dict]) -> None:
+        if self._wv_dialog is not None:
+            self._wv_dialog.close()
+        dlg = WiedervorlageDialog(faellig, self)
+        dlg.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        dlg.zeigen.connect(self._wv_zu_firma)
+        dlg.alle_zeigen.connect(self.nur_faellige_zeigen)
+        dlg.destroyed.connect(lambda *_: setattr(self, "_wv_dialog", None))
+        self._wv_dialog = dlg
+        dlg.show()
+
+    def _wv_zu_firma(self, url_key: str) -> None:
+        self.filter_zuruecksetzen()
+        self.filter_anwenden()
+        self._zu_firma(url_key)
+
+    def nur_faellige_zeigen(self) -> None:
+        self.filter_zuruecksetzen()
+        self.chk_faellig.setChecked(True)  # loest filter_anwenden() aus
+        if self.proxy.rowCount():
+            self.tabelle.selectRow(0)
 
     # --- Lauf --------------------------------------------------------------
 
@@ -1529,7 +1912,13 @@ class Fenster(QMainWindow):
 
         args = self.lauf_argumente()
 
-        self.lauf = LaufThread(self.leads, args, self.psi_key)
+        # Aussortierte ("nicht passend") werden nicht mehr geprueft
+        leads, uebersprungen = audit.ohne_aussortierte(self.leads, self.statusbuch.aussortierte())
+        if not leads:
+            QMessageBox.information(self, "Nichts zu prüfen", "Alle Firmen in der Liste sind aussortiert.")
+            return
+
+        self.lauf = LaufThread(leads, args, self.psi_key)
         self.lauf.fortschritt.connect(self.lauf_fortschritt)
         self.lauf.fertig.connect(self.lauf_fertig)
         self.lauf.fehlgeschlagen.connect(self.lauf_fehler)
@@ -1540,9 +1929,10 @@ class Fenster(QMainWindow):
         self.btn_oeffnen.setEnabled(False)
         self.sp_parallel.setEnabled(False)
         self.fortschritt.setVisible(True)
-        self.fortschritt.setRange(0, len(self.leads))
+        self.fortschritt.setRange(0, len(leads))
         self.fortschritt.setValue(0)
-        self.statusBar().showMessage(f"Prüfe {len(self.leads)} Seiten …")
+        hinweis = f" ({uebersprungen} aussortierte übersprungen)" if uebersprungen else ""
+        self.statusBar().showMessage(f"Prüfe {len(leads)} Seiten{hinweis} …")
         self.lauf.start()
 
     def lauf_stoppen(self) -> None:
@@ -1665,6 +2055,7 @@ class Fenster(QMainWindow):
                 self.statusbuch.close()
                 os._exit(0)
         self.statusbuch.close()
+        self.landbuch.close()
         super().closeEvent(event)
 
 
@@ -1714,6 +2105,10 @@ QProgressBar {{
 }}
 QProgressBar::chunk {{ background: {ACCENT}; border-radius: 5px; }}
 QStatusBar {{ color: {MUTED}; }}
+QPushButton#faellig {{
+    color: {WARN}; font-weight: 600; border: 1px solid #5a4524; border-radius: 6px; padding: 3px 10px;
+}}
+QPushButton#faellig:hover {{ background: #2b2416; }}
 
 QSplitter::handle {{ background: transparent; width: 8px; }}
 QScrollBar:vertical {{ background: transparent; width: 11px; }}

@@ -24,6 +24,8 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
+from laender import BUNDESLAENDER, RS_PRAEFIX, land_aus_schluessel  # noqa: F401
+
 console = Console()
 
 USER_AGENT = "site-audit/1.0 (+paeffgen-it.de)"
@@ -73,39 +75,12 @@ def wartezeit() -> int:
 class Region:
     titel: str
     filter: str  # vollstaendiger Overpass-Gebietsausdruck, z. B. area[...] oder area(id)
+    land: str = ""  # ISO-Code des Bundeslands, in dem das Gebiet liegt
 
 
 # Die 16 Bundeslaender ueber ihre ISO-Codes. admin_level=4 ist noetig, weil
 # sonst auch Regierungsbezirke und Stadtstaaten doppelt greifen.
-BUNDESLAENDER: dict[str, str] = {
-    "DE-BW": "Baden-Württemberg",
-    "DE-BY": "Bayern",
-    "DE-BE": "Berlin",
-    "DE-BB": "Brandenburg",
-    "DE-HB": "Bremen",
-    "DE-HH": "Hamburg",
-    "DE-HE": "Hessen",
-    "DE-MV": "Mecklenburg-Vorpommern",
-    "DE-NI": "Niedersachsen",
-    "DE-NW": "Nordrhein-Westfalen",
-    "DE-RP": "Rheinland-Pfalz",
-    "DE-SL": "Saarland",
-    "DE-SN": "Sachsen",
-    "DE-ST": "Sachsen-Anhalt",
-    "DE-SH": "Schleswig-Holstein",
-    "DE-TH": "Thüringen",
-}
-
-# Erste zwei Ziffern des Regionalschluessels je Bundesland. Darueber lassen
-# sich die Kreise eines Landes zuverlaessig greifen - die naheliegende
-# Abfrage "alle Relationen in der Flaeche" liefert auch angrenzende Kreise
-# der Nachbarlaender mit.
-RS_PRAEFIX: dict[str, str] = {
-    "DE-SH": "01", "DE-HH": "02", "DE-NI": "03", "DE-HB": "04",
-    "DE-NW": "05", "DE-HE": "06", "DE-RP": "07", "DE-BW": "08",
-    "DE-BY": "09", "DE-SL": "10", "DE-BE": "11", "DE-BB": "12",
-    "DE-MV": "13", "DE-SN": "14", "DE-ST": "15", "DE-TH": "16",
-}
+# BUNDESLAENDER und RS_PRAEFIX liegen in laender.py und werden hier weiter angeboten.
 
 
 def land_filter(iso: str) -> str:
@@ -275,18 +250,18 @@ def kreise_erneuern(ziel: Path | None = None, pause: float = 4.0, melde=None) ->
 # Peters Einzugsgebiet als Schnellwahl. Die Regionalschluessel sind stabiler
 # als Namen, die in OSM schon mal umbenannt oder anders geschrieben werden.
 REGIONEN: dict[str, Region] = {
-    "vulkaneifel": Region("Landkreis Vulkaneifel", kreis_filter("07233")),
-    "bitburg-pruem": Region("Eifelkreis Bitburg-Prüm", kreis_filter("07232")),
-    "bernkastel-wittlich": Region("Bernkastel-Wittlich", kreis_filter("07231")),
-    "cochem-zell": Region("Cochem-Zell", kreis_filter("07135")),
-    "ahrweiler": Region("Ahrweiler", kreis_filter("07131")),
-    "trier": Region("Trier", kreis_filter("07211")),
-    "trier-saarburg": Region("Trier-Saarburg", kreis_filter("07235")),
-    "bremen": Region("Bremen", kreis_filter("04011")),
-    "bremerhaven": Region("Bremerhaven", kreis_filter("04012")),
-    "cuxhaven": Region("Landkreis Cuxhaven", kreis_filter("03352")),
+    "vulkaneifel": Region("Landkreis Vulkaneifel", kreis_filter("07233"), land_aus_schluessel("07233")),
+    "bitburg-pruem": Region("Eifelkreis Bitburg-Prüm", kreis_filter("07232"), land_aus_schluessel("07232")),
+    "bernkastel-wittlich": Region("Bernkastel-Wittlich", kreis_filter("07231"), land_aus_schluessel("07231")),
+    "cochem-zell": Region("Cochem-Zell", kreis_filter("07135"), land_aus_schluessel("07135")),
+    "ahrweiler": Region("Ahrweiler", kreis_filter("07131"), land_aus_schluessel("07131")),
+    "trier": Region("Trier", kreis_filter("07211"), land_aus_schluessel("07211")),
+    "trier-saarburg": Region("Trier-Saarburg", kreis_filter("07235"), land_aus_schluessel("07235")),
+    "bremen": Region("Bremen", kreis_filter("04011"), land_aus_schluessel("04011")),
+    "bremerhaven": Region("Bremerhaven", kreis_filter("04012"), land_aus_schluessel("04012")),
+    "cuxhaven": Region("Landkreis Cuxhaven", kreis_filter("03352"), land_aus_schluessel("03352")),
     "wurster-nordseekueste": Region(
-        "Wurster Nordseeküste", 'area["name"="Wurster Nordseeküste"]["boundary"="administrative"]'
+        "Wurster Nordseeküste", 'area["name"="Wurster Nordseeküste"]["boundary"="administrative"]', "DE-NI"
     ),
 }
 
@@ -320,6 +295,7 @@ class Firma:
     telefon: str = ""
     email: str = ""
     quelle: str = ""  # OSM-Typ und Id, damit man nachschauen kann
+    bundesland: str = ""  # ISO-Code; aus dem Suchgebiet, nicht aus der Adresse
     tags: dict[str, str] = field(default_factory=dict)
 
 
@@ -431,7 +407,7 @@ def abfragen(query: str, leise: bool = False, max_sekunden: float | None = None)
 MAIL_PREFIX = re.compile(r"^mailto:", re.IGNORECASE)
 
 
-def aufbereiten(elemente: list[dict], branchen: list[str]) -> list[Firma]:
+def aufbereiten(elemente: list[dict], branchen: list[str], land: str = "") -> list[Firma]:
     """OSM-Elemente in Firmen umwandeln, Dubletten nach Domain zusammenfassen."""
     nach_domain: dict[str, Firma] = {}
     reihenfolge: list[str] = []
@@ -466,6 +442,7 @@ def aufbereiten(elemente: list[dict], branchen: list[str]) -> list[Firma]:
             telefon=(t.get("phone") or t.get("contact:phone") or "").strip(),
             email=MAIL_PREFIX.sub("", (t.get("email") or t.get("contact:email") or "").strip()),
             quelle=f"{el.get('type','?')}/{el.get('id','?')}",
+            bundesland=land,
             tags=t,
         )
         if host in nach_domain:
@@ -512,7 +489,7 @@ def suchen_in(region: Region, branchen: list[str], leise: bool = False) -> list[
     if not branchen:
         return []
     elemente = abfragen(bauen(region, branchen), leise=leise)
-    return aufbereiten(elemente, branchen)
+    return aufbereiten(elemente, branchen, region.land)
 
 
 # ---------------------------------------------------------------------------
@@ -523,9 +500,9 @@ def suchen_in(region: Region, branchen: list[str], leise: bool = False) -> list[
 def schreiben(firmen: list[Firma], pfad: Path) -> None:
     with pfad.open("w", newline="", encoding="utf-8") as fh:
         w = csv.writer(fh)
-        w.writerow(["name", "url", "ort", "branche", "telefon", "email", "quelle"])
+        w.writerow(["name", "url", "ort", "branche", "telefon", "email", "quelle", "bundesland"])
         for f in firmen:
-            w.writerow([f.name, f.url, f.ort, f.branche, f.telefon, f.email, f.quelle])
+            w.writerow([f.name, f.url, f.ort, f.branche, f.telefon, f.email, f.quelle, BUNDESLAENDER.get(f.bundesland, "")])
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -577,7 +554,7 @@ def main(argv: list[str] | None = None) -> int:
         with args.out.open("a", newline="", encoding="utf-8") as fh:
             w = csv.writer(fh)
             for f in neu:
-                w.writerow([f.name, f.url, f.ort, f.branche, f.telefon, f.email, f.quelle])
+                w.writerow([f.name, f.url, f.ort, f.branche, f.telefon, f.email, f.quelle, BUNDESLAENDER.get(f.bundesland, "")])
         firmen = neu
     else:
         schreiben(firmen, args.out)

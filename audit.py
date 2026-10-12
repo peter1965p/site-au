@@ -29,6 +29,7 @@ import httpx
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 import kontaktsuche
+from laender import iso_aus, land_name
 from rich.console import Console
 from rich.progress import (
     BarColumn,
@@ -116,6 +117,7 @@ class Lead:
     branche: str = ""
     telefon: str = ""  # falls die Quelle schon welche mitbringt
     email: str = ""
+    bundesland: str = ""  # ISO-Code ("DE-NI"); leer = unbekannt
 
 
 @dataclass
@@ -242,6 +244,7 @@ class Result:
     empfehlung: str = ""  # Anruf | Mail | Kontaktformular | ...
     empfehlung_grund: str = ""
     unerreichbar_grund: str = ""  # timeout | dns | verbindung | http5xx | weiterleitungen | robots
+    bundesland: str = ""  # ISO-Code, kommt aus dem Lead
 
     def __post_init__(self) -> None:
         """Altbestand aus dem Cache auf die neuen Status umstellen.
@@ -2135,6 +2138,7 @@ def unbewertet(
         final_url=final_url, status=status, score=None, cms="", argumente=[],
         befunde=[befund], severities={}, geprueft_am=now,
         telefon=lead.telefon, email=lead.email, unerreichbar_grund=grund,
+        bundesland=lead.bundesland,
     )
     res.empfehlung, res.empfehlung_grund = naechster_schritt(res)
     return res
@@ -2314,6 +2318,7 @@ async def audit_lead(lead: Lead, fetcher: Fetcher, args: argparse.Namespace, psi
         email=email,
         kontakt_quelle=quelle_kontakt,
         kontaktformular=formular,
+        bundesland=lead.bundesland,
     )
     res.empfehlung, res.empfehlung_grund = naechster_schritt(res)
     return res
@@ -2394,6 +2399,8 @@ class Cache:
             return None
         # Stammdaten aus der CSV gewinnen, die koennen sich geaendert haben
         data.update(name=lead.name, ort=lead.ort, branche=lead.branche, url=lead.url)
+        if lead.bundesland:
+            data["bundesland"] = lead.bundesland
         return Result(**data)
 
     def put(self, result: Result, with_pagespeed: bool) -> None:
@@ -2425,6 +2432,14 @@ STATUS_WERTE = [
     "kein Interesse",
     "nicht passend",
 ]
+
+
+# "nicht passend" sortiert die Firma aus: sie verschwindet aus der Liste, wird nicht mehr
+# geprueft und von einer spaeteren Firmensuche nicht erneut angeboten. Der Eintrag im
+# Statusbuch ist zugleich die Sperrliste.
+STATUS_AUSSORTIERT = "nicht passend"
+# Ist der Fall erledigt, gibt es nichts mehr, woran eine Wiedervorlage erinnern koennte.
+STATUS_ERLEDIGT = frozenset({"kunde", "kein Interesse", STATUS_AUSSORTIERT})
 
 
 @dataclass
@@ -2496,16 +2511,67 @@ class Statusbuch:
         return LeadStatus(k, status, notiz, wiedervorlage, jetzt)
 
     def faellige_wiedervorlagen(self, stichtag: str | None = None) -> list[LeadStatus]:
+        """Wiedervorlagen mit Datum bis einschliesslich heute, aelteste zuerst.
+
+        Erledigte Faelle (Kunde, kein Interesse, nicht passend) zaehlen nicht mit: wer
+        nach einer Wiedervorlage doch abgesagt hat, soll nicht weiter erinnert werden.
+        """
         tag = stichtag or datetime.now().date().isoformat()
         rows = self.conn.execute(
             "SELECT url_key, status, notiz, wiedervorlage, geaendert_am FROM lead_status"
             " WHERE wiedervorlage != '' AND wiedervorlage <= ? ORDER BY wiedervorlage",
             (tag,),
         ).fetchall()
-        return [LeadStatus(*r) for r in rows]
+        return [LeadStatus(*r) for r in rows if r[1] not in STATUS_ERLEDIGT]
+
+    def aussortierte(self) -> set[str]:
+        """Schluessel aller Firmen mit Status "nicht passend" (die Sperrliste)."""
+        rows = self.conn.execute(
+            "SELECT url_key FROM lead_status WHERE status = ?", (STATUS_AUSSORTIERT,)
+        ).fetchall()
+        return {r[0] for r in rows}
 
     def close(self) -> None:
         self.conn.close()
+
+
+class Landbuch:
+    """Bundesland je Firma, in derselben SQLite-Datei wie Cache und Statusbuch.
+
+    Neue Firmen bekommen ihr Land bei der Suche mit. Fuer aeltere Listen ohne
+    Bundesland-Spalte haelt diese Tabelle die Zuordnung, ohne dass die CSV
+    angefasst werden muss - die Liste kann so von aelteren Programmstaenden
+    unbeschadet weitergeschrieben werden.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self.conn = sqlite3.connect(path, timeout=15)
+        self.conn.execute("PRAGMA journal_mode=WAL")
+        self.conn.execute(
+            "CREATE TABLE IF NOT EXISTS lead_land (url_key TEXT PRIMARY KEY, land TEXT NOT NULL)"
+        )
+        self.conn.commit()
+
+    def alle(self) -> dict[str, str]:
+        return dict(self.conn.execute("SELECT url_key, land FROM lead_land").fetchall())
+
+    def setzen_viele(self, zuordnung: dict[str, str]) -> None:
+        """url_key -> ISO-Code. Vorhandene Eintraege werden ueberschrieben."""
+        self.conn.executemany(
+            "INSERT INTO lead_land (url_key, land) VALUES (?, ?)"
+            " ON CONFLICT(url_key) DO UPDATE SET land = excluded.land",
+            [(url_key(u), iso) for u, iso in zuordnung.items() if iso],
+        )
+        self.conn.commit()
+
+    def close(self) -> None:
+        self.conn.close()
+
+
+def ohne_aussortierte(leads: list[Lead], gesperrt: set[str]) -> tuple[list[Lead], int]:
+    """Leads ohne die aussortierten, plus deren Anzahl."""
+    aktiv = [l for l in leads if url_key(l.url) not in gesperrt]
+    return aktiv, len(leads) - len(aktiv)
 
 
 # ---------------------------------------------------------------------------
@@ -2540,13 +2606,15 @@ def read_leads(path: Path) -> list[Lead]:
                     branche=(row.get(cols.get("branche", ""), "") or "").strip(),
                     telefon=(row.get(cols.get("telefon", ""), "") or "").strip(),
                     email=(row.get(cols.get("email", ""), "") or "").strip(),
+                    # Name oder ISO-Code; Unbekanntes bleibt leer statt geraten zu werden
+                    bundesland=iso_aus(row.get(cols.get("bundesland", ""), "") or ""),
                 )
             )
     return leads
 
 
 CSV_COLUMNS = [
-    "score", "empfehlung", "name", "telefon", "email", "ort", "branche", "url",
+    "score", "empfehlung", "name", "telefon", "email", "bundesland", "ort", "branche", "url",
     "final_url", "status", "cms", "pagespeed", "akquise", "wiedervorlage",
     "notiz", "begruendung", "argumente", "befunde", "geprueft_am",
 ]
@@ -2563,7 +2631,7 @@ def write_csv(results: list[Result], path: Path, status: dict[str, LeadStatus] |
             writer.writerow(
                 [
                     "" if r.score is None else f"{r.score:.1f}", r.empfehlung, r.name, r.telefon, r.email,
-                    r.ort, r.branche, r.url, r.final_url,
+                    land_name(r.bundesland) if r.bundesland else "", r.ort, r.branche, r.url, r.final_url,
                     r.status, r.cms, "" if r.pagespeed is None else r.pagespeed,
                     st.status, st.wiedervorlage, st.notiz, r.empfehlung_grund,
                     " ".join(r.argumente), " | ".join(r.befunde), r.geprueft_am,
@@ -2786,6 +2854,17 @@ def main(argv: list[str] | None = None) -> int:
     # Das Statusbuch wird immer geoeffnet, auch bei --no-cache: es haelt
     # Gespraechsnotizen, nicht Pruefergebnisse.
     statusbuch = Statusbuch(args.cache)
+
+    # Als "nicht passend" aussortierte Firmen werden nicht mehr geprueft.
+    leads, uebersprungen = ohne_aussortierte(leads, statusbuch.aussortierte())
+    if uebersprungen:
+        console.print(f"[dim]{uebersprungen} als 'nicht passend' aussortierte Firmen uebersprungen.[/dim]")
+    if not leads:
+        console.print("[yellow]Nichts zu pruefen: alle Firmen sind aussortiert.[/yellow]")
+        statusbuch.close()
+        if cache is not None:
+            cache.close()
+        return 0
 
     console.print(
         f"[bold]site-audit[/bold]  {len(leads)} Leads aus {args.csv}  "
